@@ -17,60 +17,175 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import typing
+from __future__ import annotations
+
+from typing import Dict, List, Literal, Optional
+
 import bittensor as bt
+from pydantic import BaseModel, Field
 
-# TODO(developer): Rewrite with your protocol definition.
-
-# This is the protocol for the dummy miner and validator.
-# It is a simple request-response protocol where the validator sends a request
-# to the miner, and the miner responds with a dummy response.
-
-# ---- miner ----
-# Example usage:
-#   def dummy( synapse: Dummy ) -> Dummy:
-#       synapse.dummy_output = synapse.dummy_input + 1
-#       return synapse
-#   axon = bt.axon().attach( dummy ).serve(netuid=...).start()
-
-# ---- validator ---
-# Example usage:
-#   dendrite = bt.dendrite()
-#   dummy_output = dendrite.query( Dummy( dummy_input = 1 ) )
-#   assert dummy_output == 2
+TaskType = Literal["inference", "verification", "training"]
+DatasetPartition = Literal["training_pool", "golden", "hidden_eval", "replay", "promotion"]
+SeverityTier = Literal["none", "low", "medium", "high", "critical"]
 
 
-class Dummy(bt.Synapse):
+class BoundingBox(BaseModel):
+    """Axis-aligned detection box in normalized coordinates."""
+
+    x_min: float = Field(..., ge=0.0, le=1.0)
+    y_min: float = Field(..., ge=0.0, le=1.0)
+    x_max: float = Field(..., ge=0.0, le=1.0)
+    y_max: float = Field(..., ge=0.0, le=1.0)
+    label: str = Field(..., min_length=1)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class TrainingManifest(BaseModel):
+    """Miner-submitted metadata describing a training contribution."""
+
+    parent_model_hash: str = Field(..., min_length=8)
+    candidate_model_hash: str = Field(..., min_length=8)
+    candidate_model_uri: str = Field(..., min_length=1)
+    config_hash: str = Field(..., min_length=8)
+    dataset_lineage_hash: str = Field(..., min_length=8)
+    recipe_uri: str = Field(..., min_length=1)
+    metrics: Dict[str, float] = Field(default_factory=dict)
+
+
+class DatasetPointer(BaseModel):
+    """Configurable dataset pointer shared by validators and miners."""
+
+    uri: str = Field(..., min_length=1)
+    sha256: str = Field(..., min_length=8)
+    split: DatasetPartition
+    sample_count: int = Field(..., ge=1)
+
+
+class ModelCheckpoint(BaseModel):
+    """Current global baseline checkpoint issued by validators."""
+
+    uri: str = Field(..., min_length=1)
+    sha256: str = Field(..., min_length=8)
+
+
+class R2AccessCredentials(BaseModel):
+    """Miner-advertised Cloudflare R2 access credentials for validator download."""
+
+    account_id: str = Field(..., min_length=4)
+    bucket_name: str = Field(..., min_length=1)
+    s3_endpoint: str = Field(..., min_length=8)
+    access_key_id: str = Field(..., min_length=4)
+    secret_access_key: str = Field(..., min_length=8)
+    token: Optional[str] = Field(None)
+    public_bucket_url: Optional[str] = Field(None)
+
+
+class HazardDetection(bt.Synapse):
     """
-    A simple dummy protocol representation which uses bt.Synapse as its base.
-    This protocol helps in handling dummy request and response communication between
-    the miner and the validator.
+    Production protocol for construction hazard subnet tasks.
 
-    Attributes:
-    - dummy_input: An integer value representing the input request sent by the validator.
-    - dummy_output: An optional integer value which, when filled, represents the response from the miner.
+    Validators submit one explicit task type and miners must answer through the
+    same schema. There is no alternate protocol path.
     """
 
-    # Required request input, filled by sending dendrite caller.
-    dummy_input: int
+    schema_version: str = Field(
+        "hazard.v2",
+        title="Schema Version",
+        description="Protocol schema version enforced by validators.",
+    )
+    task_type: str = Field(
+        "",
+        title="Task Type",
+        description="Task category issued by the validator.",
+    )
+    dataset_partition: str = Field(
+        "",
+        title="Dataset Partition",
+        description="Validator-owned partition used to generate this task.",
+    )
+    task_id: str = Field(
+        "",
+        title="Task ID",
+        description="Stable identifier for reproducibility and auditing.",
+    )
+    site_id: str = Field(
+        "",
+        title="Site ID",
+        description="Construction site identifier attached by validator.",
+    )
+    challenge_nonce: str = Field(
+        "",
+        title="Challenge Nonce",
+        description="Verifier nonce to prevent stale response replay.",
+    )
+    image_b64: str = Field(
+        "",
+        title="Image Base64",
+        description="Base64-encoded construction image payload for inference tasks.",
+    )
+    image_format: str = Field(
+        "jpg",
+        title="Image Format",
+        description="Image encoding format for image_b64 payload.",
+    )
+    training_dataset: Optional[DatasetPointer] = Field(
+        None,
+        title="Training Dataset Pointer",
+        description="70 percent miner-visible CSDataset split or compatible replacement.",
+    )
+    golden_dataset: Optional[DatasetPointer] = Field(
+        None,
+        title="Golden Dataset Pointer",
+        description="Validator-only held-out split used for checkpoint scoring.",
+    )
+    baseline_checkpoint: Optional[ModelCheckpoint] = Field(
+        None,
+        title="Baseline Checkpoint",
+        description="Current global baseline that miners must fine-tune.",
+    )
+    max_training_seconds: Optional[int] = Field(
+        None,
+        ge=1,
+        title="Max Training Seconds",
+        description="Validator-enforced wall-clock training budget for smoke or production tasks.",
+    )
+    requested_model_hash: Optional[str] = Field(
+        None,
+        title="Requested Model Hash",
+        description="Optional model hash to enforce during verification tasks.",
+    )
+    training_manifest: Optional[TrainingManifest] = Field(
+        None,
+        title="Training Manifest",
+        description="Training claim under audit for training_commit tasks.",
+    )
+    submitted_training_manifest: Optional[TrainingManifest] = Field(
+        None,
+        title="Submitted Training Manifest",
+        description="Miner-provided training claim captured during response.",
+    )
+    miner_r2_credentials: Optional[R2AccessCredentials] = Field(
+        None,
+        title="Miner R2 Credentials Handshake",
+        description="Handshake payload giving validator access to miner-hosted checkpoint storage.",
+    )
+    miner_storage_signal: Optional[str] = Field(
+        None,
+        title="Miner Storage Download Signal",
+        description="Signal sent by miner after upload to trigger validator checkpoint download and scoring.",
+    )
 
-    # Optional request output, filled by receiving axon.
-    dummy_output: typing.Optional[int] = None
+    hazard_detected: Optional[bool] = Field(None, title="Hazard Detected")
+    severity: Optional[SeverityTier] = Field(None, title="Severity")
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    bounding_boxes: List[BoundingBox] = Field(default_factory=list)
+    rationale: Optional[str] = Field(None, max_length=1024)
+    osha_refs: List[str] = Field(default_factory=list)
+    model_hash: Optional[str] = Field(None, min_length=8)
+    training_metrics: Dict[str, float] = Field(default_factory=dict)
+    duration_ms: Optional[int] = Field(None, ge=0)
+    error_message: Optional[str] = Field(None, max_length=512)
 
-    def deserialize(self) -> int:
-        """
-        Deserialize the dummy output. This method retrieves the response from
-        the miner in the form of dummy_output, deserializes it and returns it
-        as the output of the dendrite.query() call.
-
-        Returns:
-        - int: The deserialized response, which in this case is the value of dummy_output.
-
-        Example:
-        Assuming a Dummy instance has a dummy_output value of 5:
-        >>> dummy_instance = Dummy(dummy_input=4)
-        >>> dummy_instance.dummy_output = 5
-        >>> dummy_instance.deserialize()
-        5
-        """
-        return self.dummy_output
+    def deserialize(self) -> "HazardDetection":
+        """Return the complete response payload to validator callers."""
+        return self

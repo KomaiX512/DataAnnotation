@@ -1,0 +1,2 @@
+{"task_id":"golden-001","site_id":"site-alpha","image_b64":"R09MREVOX0lNQUdFXzAwMQ==","image_format":"jpg","hazard_detected":true,"severity":"high","expected_boxes":[{"x_min":0.12,"y_min":0.18,"x_max":0.48,"y_max":0.69}],"expected_osha_refs":["29CFR1926.501"],"expected_model_hash":"golden-model-a"}
+{"task_id":"golden-002","site_id":"site-beta","image_b64":"R09MREVOX0lNQUdFXzAwMg==","image_format":"jpg","hazard_detected":false,"severity":"none","expected_boxes":[],"expected_osha_refs":["29CFR1926.95"],"expected_model_hash":"golden-model-b"}

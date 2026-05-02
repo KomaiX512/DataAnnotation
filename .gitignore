@@ -163,3 +163,12 @@ testing/
 
 # Editors
 .vscode/settings.json
+
+# Project-specific local artifacts
+.venv-btcli/
+.venv-neurons/
+artifacts/
+runs/
+subtensor/
+*.pt
+*.pdf

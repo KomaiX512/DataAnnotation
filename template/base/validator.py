@@ -23,6 +23,8 @@ import numpy as np
 import asyncio
 import argparse
 import threading
+import os
+import time
 import bittensor as bt
 
 from typing import List, Union
@@ -118,7 +120,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
     def run(self):
         """
-        Initiates and manages the main loop for the miner on the Bittensor network. The main loop handles graceful shutdown on keyboard interrupts and logs unforeseen errors.
+        Initiates and manages the main loop for the miner on the Bittensor network. The main loop handles graceful shutdown on keyboard interrupts. Exceptions during a single forward step are logged and the loop continues after a short backoff (step counter is not advanced).
 
         This function performs the following primary tasks:
         1. Check for registration on the Bittensor network.
@@ -133,7 +135,6 @@ class BaseValidatorNeuron(BaseNeuron):
 
         Raises:
             KeyboardInterrupt: If the miner is stopped by a manual interruption.
-            Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
 
         # Check that validator is registered on the network.
@@ -141,35 +142,42 @@ class BaseValidatorNeuron(BaseNeuron):
 
         bt.logging.info(f"Validator starting at block: {self.block}")
 
-        # This loop maintains the validator's operations until intentionally stopped.
         try:
             while True:
+                if self.should_exit:
+                    break
                 bt.logging.info(f"step({self.step}) block({self.block})")
 
-                # Run multiple forwards concurrently.
-                self.loop.run_until_complete(self.concurrent_forward())
+                try:
+                    self.loop.run_until_complete(self.concurrent_forward())
+                except KeyboardInterrupt:
+                    self.axon.stop()
+                    bt.logging.success("Validator killed by keyboard interrupt.")
+                    exit()
+                except Exception as err:
+                    bt.logging.error(
+                        f"Error during validation step({self.step}): {err}"
+                    )
+                    bt.logging.debug(
+                        str(
+                            print_exception(
+                                type(err), err, err.__traceback__
+                            )
+                        )
+                    )
+                    time.sleep(2.0)
+                    continue
 
-                # Check if we should exit.
                 if self.should_exit:
                     break
 
-                # Sync metagraph and potentially set weights.
                 self.sync()
-
                 self.step += 1
 
-        # If someone intentionally stops the validator, it'll safely terminate operations.
         except KeyboardInterrupt:
             self.axon.stop()
             bt.logging.success("Validator killed by keyboard interrupt.")
             exit()
-
-        # In case of unforeseen errors, the validator will log the error and continue operations.
-        except Exception as err:
-            bt.logging.error(f"Error during validation: {str(err)}")
-            bt.logging.debug(
-                str(print_exception(type(err), err, err.__traceback__))
-            )
 
     def run_in_background_thread(self):
         """
@@ -378,9 +386,11 @@ class BaseValidatorNeuron(BaseNeuron):
     def load_state(self):
         """Loads the state of the validator from a file."""
         bt.logging.info("Loading validator state.")
-
-        # Load the state of the validator from file.
-        state = np.load(self.config.neuron.full_path + "/state.npz")
+        state_path = self.config.neuron.full_path + "/state.npz"
+        if not os.path.exists(state_path):
+            bt.logging.warning("No previous validator state found.")
+            return
+        state = np.load(state_path)
         self.step = state["step"]
         self.scores = state["scores"]
         self.hotkeys = state["hotkeys"]

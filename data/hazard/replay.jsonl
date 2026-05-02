@@ -1,0 +1,2 @@
+{"task_id":"replay-001","site_id":"site-epsilon","image_b64":"UkVQTEFZX0lNQUdFXzAwMQ==","image_format":"jpg","hazard_detected":true,"severity":"low","expected_boxes":[{"x_min":0.44,"y_min":0.27,"x_max":0.66,"y_max":0.52}],"expected_osha_refs":["29CFR1926.1053"],"expected_model_hash":"replay-model-a"}
+{"task_id":"replay-002","site_id":"site-zeta","image_b64":"UkVQTEFZX0lNQUdFXzAwMg==","image_format":"jpg","hazard_detected":false,"severity":"none","expected_boxes":[],"expected_osha_refs":["29CFR1926.95"],"expected_model_hash":"replay-model-b"}

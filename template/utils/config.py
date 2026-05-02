@@ -19,6 +19,7 @@
 import os
 import subprocess
 import argparse
+from pathlib import Path
 import bittensor as bt
 from .logging import setup_events_logger
 
@@ -156,6 +157,55 @@ def add_miner_args(cls, parser):
     )
 
     parser.add_argument(
+        "--miner.training_workspace",
+        type=str,
+        help="Writable directory where miner training artifacts are produced.",
+        default=str(Path.cwd() / "artifacts" / "miner_training"),
+    )
+
+    parser.add_argument(
+        "--miner.private_dataset_root",
+        type=str,
+        help="Optional miner-owned private images directory to mix into training.",
+        default="",
+    )
+
+    parser.add_argument(
+        "--miner.enable_auto_hpo",
+        action="store_true",
+        help="Enable miner-side auto-HPO loop for training tasks.",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--miner.autoresearch",
+        action="store_true",
+        help="Enable Karpathy-style autoresearch loop before YOLO training.",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--miner.autoresearch_max_iters",
+        type=int,
+        help="Maximum iterations for autoresearch loop when enabled.",
+        default=4,
+    )
+
+    parser.add_argument(
+        "--miner.autoresearch_experiment_minutes",
+        type=int,
+        help="Per-iteration budget in minutes for autoresearch experiments.",
+        default=5,
+    )
+
+    parser.add_argument(
+        "--miner.autoresearch_log_level",
+        type=str,
+        help="Autoresearch log level.",
+        default="INFO",
+    )
+
+    parser.add_argument(
         "--wandb.project_name",
         type=str,
         default="template-miners",
@@ -185,6 +235,13 @@ def add_validator_args(cls, parser):
         type=float,
         help="The timeout for each forward call in seconds.",
         default=10,
+    )
+
+    parser.add_argument(
+        "--neuron.training_timeout",
+        type=float,
+        help="Dendrite timeout for miner training tasks. Must cover the full train/upload response path.",
+        default=0.0,
     )
 
     parser.add_argument(
@@ -230,6 +287,71 @@ def add_validator_args(cls, parser):
         type=int,
         help="The maximum number of TAO allowed to query a validator with a vpermit.",
         default=4096,
+    )
+
+    parser.add_argument(
+        "--neuron.dataset_root",
+        type=str,
+        help="Path to validator-owned hazard dataset partitions.",
+        default=str(
+            Path(__file__).resolve().parents[2] / "data" / "hazard"
+        ),
+    )
+
+    parser.add_argument(
+        "--neuron.scheduler_seed",
+        type=int,
+        help="Deterministic seed for cohort scheduler and dataset sampling.",
+        default=13,
+    )
+
+    parser.add_argument(
+        "--neuron.promotion_threshold",
+        type=float,
+        help="Minimum final score required for model promotion.",
+        default=0.75,
+    )
+
+    parser.add_argument(
+        "--neuron.baseline_checkpoint_uri",
+        type=str,
+        help="URI to the current global baseline checkpoint miners fine-tune.",
+        default="yolov8s.pt",
+    )
+
+    parser.add_argument(
+        "--neuron.baseline_checkpoint_hash",
+        type=str,
+        help="Expected SHA256 hash of the current global baseline checkpoint.",
+        default="",
+    )
+
+    parser.add_argument(
+        "--neuron.max_training_seconds",
+        type=int,
+        help="Training budget for smoke or production TrainingTask synapses.",
+        default=60,
+    )
+
+    parser.add_argument(
+        "--neuron.incentive_temperature",
+        type=float,
+        help="Temperature for broad softmax incentive shaping.",
+        default=0.25,
+    )
+
+    parser.add_argument(
+        "--neuron.incentive_floor",
+        type=float,
+        help="Minimum nonzero share for eligible value-adding miners.",
+        default=0.002,
+    )
+
+    parser.add_argument(
+        "--neuron.incentive_min_score",
+        type=float,
+        help="Minimum EMA score required before a miner receives broad-softmax share.",
+        default=0.05,
     )
 
     parser.add_argument(

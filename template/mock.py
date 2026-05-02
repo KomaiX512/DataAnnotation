@@ -1,122 +1,121 @@
-import time
-
 import asyncio
 import random
-import bittensor as bt
+from dataclasses import dataclass
 
-from typing import List
+import numpy as np
+
+from template.miner import HazardMinerEngine
 
 
-class MockSubtensor(bt.MockSubtensor):
+@dataclass
+class _MockKey:
+    ss58_address: str
+
+
+class MockWallet:
+    def __init__(self, hotkey: str = "mock-hotkey-0", coldkey: str = "mock-coldkey-0"):
+        self.hotkey = _MockKey(hotkey)
+        self.coldkey = _MockKey(coldkey)
+
+
+@dataclass
+class MockAxonInfo:
+    uid: int
+    hotkey: str
+    ip: str = "127.0.0.1"
+    port: int = 8091
+    is_serving: bool = True
+
+
+class MockSubtensor:
     def __init__(self, netuid, n=16, wallet=None, network="mock"):
-        super().__init__(network=network)
+        self.netuid = netuid
+        self.network = network
+        self.chain_endpoint = "mock_endpoint"
+        self._block = 1
+        owner_hotkey = wallet.hotkey.ss58_address if wallet else "mock-hotkey-0"
+        self._hotkeys = [owner_hotkey] + [f"miner-hotkey-{i}" for i in range(1, n + 1)]
 
-        if not self.subnet_exists(netuid):
-            self.create_subnet(netuid)
+    def subnet_exists(self, netuid):
+        return netuid == self.netuid
 
-        # Register ourself (the validator) as a neuron at uid=0
-        if wallet is not None:
-            self.force_register_neuron(
-                netuid=netuid,
-                hotkey=wallet.hotkey.ss58_address,
-                coldkey=wallet.coldkey.ss58_address,
-                balance=100000,
-                stake=100000,
-            )
+    def is_hotkey_registered(self, netuid, hotkey_ss58):
+        return netuid == self.netuid and hotkey_ss58 in self._hotkeys
 
-        # Register n mock neurons who will be miners
-        for i in range(1, n + 1):
-            self.force_register_neuron(
-                netuid=netuid,
-                hotkey=f"miner-hotkey-{i}",
-                coldkey="mock-coldkey",
-                balance=100000,
-                stake=100000,
-            )
+    def metagraph(self, netuid):
+        return MockMetagraph(netuid=netuid, subtensor=self)
+
+    def serve_axon(self, netuid, axon):
+        return True
+
+    def set_weights(self, **kwargs):
+        return True, "ok"
+
+    def get_current_block(self):
+        self._block += 1
+        return self._block
 
 
-class MockMetagraph(bt.metagraph):
+class MockMetagraph:
     def __init__(self, netuid=1, network="mock", subtensor=None):
-        super().__init__(netuid=netuid, network=network, sync=False)
-
-        if subtensor is not None:
-            self.subtensor = subtensor
+        self.netuid = netuid
+        self.network = network
+        self.subtensor = subtensor
         self.sync(subtensor=subtensor)
 
-        for axon in self.axons:
-            axon.ip = "127.0.0.0"
-            axon.port = 8091
+    def sync(self, subtensor=None):
+        if subtensor is not None:
+            self.subtensor = subtensor
+        hotkeys = list(getattr(self.subtensor, "_hotkeys", ["mock-hotkey-0"]))
+        self.hotkeys = hotkeys
+        self.n = np.array(len(hotkeys))
+        self.uids = np.arange(len(hotkeys))
+        self.S = np.array([0.0] + [1.0] * (len(hotkeys) - 1), dtype=np.float32)
+        self.validator_permit = np.array([False] * len(hotkeys))
+        self.last_update = np.array([0] * len(hotkeys))
+        self.axons = [MockAxonInfo(uid=i, hotkey=hk) for i, hk in enumerate(hotkeys)]
 
-        bt.logging.info(f"Metagraph: {self}")
-        bt.logging.info(f"Axons: {self.axons}")
+
+class MockAxon:
+    def __init__(self, wallet, config):
+        self.wallet = wallet
+        self.config = config
+        self._forward = None
+
+    def attach(self, forward_fn, blacklist_fn=None, priority_fn=None):
+        self._forward = forward_fn
+        return self
+
+    def serve(self, netuid, subtensor):
+        return self
+
+    def start(self):
+        return self
+
+    def stop(self):
+        return self
+
+    def __repr__(self):
+        return f"MockAxon(hotkey={self.wallet.hotkey.ss58_address})"
 
 
-class MockDendrite(bt.dendrite):
-    """
-    Replaces a real bittensor network request with a mock request that just returns some static response for all axons that are passed and adds some random delay.
-    """
-
+class MockDendrite:
     def __init__(self, wallet):
-        super().__init__(wallet)
+        self.wallet = wallet
+        self.engines = {}
 
-    async def forward(
-        self,
-        axons: List[bt.axon],
-        synapse: bt.Synapse = bt.Synapse(),
-        timeout: float = 12,
-        deserialize: bool = True,
-        run_async: bool = True,
-        streaming: bool = False,
-    ):
-        if streaming:
-            raise NotImplementedError("Streaming not implemented yet.")
+    async def __call__(self, axons, synapse, timeout=12, deserialize=True, **kwargs):
+        async def single_response(axon):
+            response = synapse.model_copy(deep=True)
+            engine = self.engines.setdefault(axon.uid, HazardMinerEngine())
+            process_time = random.random()
+            if process_time < timeout:
+                response = engine.run(response)
+            else:
+                response.error_message = "Timeout"
+            return response.deserialize() if deserialize else response
 
-        async def query_all_axons(streaming: bool):
-            """Queries all axons for responses."""
+        return await asyncio.gather(*(single_response(axon) for axon in axons))
 
-            async def single_axon_response(i, axon):
-                """Queries a single axon for a response."""
-
-                start_time = time.time()
-                s = synapse.copy()
-                # Attach some more required data so it looks real
-                s = self.preprocess_synapse_for_request(axon, s, timeout)
-                # We just want to mock the response, so we'll just fill in some data
-                process_time = random.random()
-                if process_time < timeout:
-                    s.dendrite.process_time = str(time.time() - start_time)
-                    # Update the status code and status message of the dendrite to match the axon
-                    # TODO (developer): replace with your own expected synapse data
-                    s.dummy_output = s.dummy_input * 2
-                    s.dendrite.status_code = 200
-                    s.dendrite.status_message = "OK"
-                    synapse.dendrite.process_time = str(process_time)
-                else:
-                    s.dummy_output = 0
-                    s.dendrite.status_code = 408
-                    s.dendrite.status_message = "Timeout"
-                    synapse.dendrite.process_time = str(timeout)
-
-                # Return the updated synapse object after deserializing if requested
-                if deserialize:
-                    return s.deserialize()
-                else:
-                    return s
-
-            return await asyncio.gather(
-                *(
-                    single_axon_response(i, target_axon)
-                    for i, target_axon in enumerate(axons)
-                )
-            )
-
-        return await query_all_axons(streaming)
-
-    def __str__(self) -> str:
-        """
-        Returns a string representation of the Dendrite object.
-
-        Returns:
-            str: The string representation of the Dendrite object in the format "dendrite(<user_wallet_address>)".
-        """
-        return "MockDendrite({})".format(self.keypair.ss58_address)
+    def __str__(self):
+        return f"MockDendrite({self.wallet.hotkey.ss58_address})"
