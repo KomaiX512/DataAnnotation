@@ -9,7 +9,7 @@ from template.hazard.dataset import HazardDatasetManager
 from template.hazard.r2_storage import download_checkpoint_from_r2
 from template.protocol import R2AccessCredentials, TrainingManifest
 
-DATASET_REPO_ID = "cppe-5"
+DATASET_REPO_ID = os.getenv("HAZARD_DATASET_REPO_ID", "cppe-5")
 
 
 @dataclass(frozen=True)

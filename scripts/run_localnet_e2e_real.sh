@@ -21,6 +21,9 @@ AUTORESEARCH_MAX_ITERS="${AUTORESEARCH_MAX_ITERS:-1}"
 AUTORESEARCH_EXPERIMENT_MINUTES="${AUTORESEARCH_EXPERIMENT_MINUTES:-1}"
 # Optional explicit dendrite timeout for training tasks (seconds). 0 = use validator default logic.
 TRAINING_TIMEOUT="${TRAINING_TIMEOUT:-0}"
+MINER_RESPONSE_MODE="${MINER_RESPONSE_MODE:-standard}"
+# Single-miner E2E: only sample one UID and pin queries to this hotkey (avoids stale on-chain "serving" peers).
+NEURON_SAMPLE_SIZE="${NEURON_SAMPLE_SIZE:-1}"
 
 export PYTHONPATH="$ROOT_DIR"
 export CHAIN_ENDPOINT NETUID WALLET_PATH \
@@ -99,6 +102,18 @@ assert_chain_progressing
 log "Verifying miner/validator registrations..."
 assert_registrations
 
+export LOCALNET_TARGET_MINER_SS58="$(
+  "$NEURON_PYTHON" - <<'PY'
+import os
+import bittensor as bt
+path = os.environ["WALLET_PATH"]
+name = os.environ["MINER_WALLET_NAME"]
+hk = os.environ["MINER_WALLET_HOTKEY"]
+print(bt.wallet(name=name, hotkey=hk, path=path).hotkey.ss58_address)
+PY
+)"
+log "Pinned localnet miner hotkey for sampling: $LOCALNET_TARGET_MINER_SS58"
+
 MINER_LOG="$ROOT_DIR/artifacts/miner_e2e.log"
 VALIDATOR_LOG="$ROOT_DIR/artifacts/validator_e2e.log"
 mkdir -p "$ROOT_DIR/artifacts"
@@ -113,6 +128,7 @@ MINER_CMD=(
   --netuid "$NETUID"
   --axon.port "$MINER_PORT"
   --miner.training_workspace "$ROOT_DIR/artifacts/miner_training"
+  --miner.response_mode "$MINER_RESPONSE_MODE"
   --logging.debug
 )
 
@@ -134,6 +150,7 @@ VALIDATOR_CMD=(
   --netuid "$NETUID"
   --axon.port "$VALIDATOR_PORT"
   --neuron.max_training_seconds "$MAX_TRAINING_SECONDS"
+  --neuron.sample_size "$NEURON_SAMPLE_SIZE"
   --logging.debug
 )
 if [[ "${TRAINING_TIMEOUT:-0}" =~ ^[0-9]+$ ]] && [[ "${TRAINING_TIMEOUT}" -gt 0 ]]; then

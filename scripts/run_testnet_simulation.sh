@@ -25,6 +25,7 @@ DATASET_ROOT="${DATASET_ROOT:-$ROOT_DIR/data/hazard}"
 BASELINE_URI="${BASELINE_URI:-$(realpath "$ROOT_DIR/data/hazard/baseline_checkpoint.json" | sed 's#^#file://#')}"
 MAX_TRAINING_SECONDS="${MAX_TRAINING_SECONDS:-120}"
 ENABLE_AUTORESEARCH="${ENABLE_AUTORESEARCH:-0}"
+MINER_RESPONSE_MODE="${MINER_RESPONSE_MODE:-standard}"
 
 INCENTIVE_TEMPERATURE="${INCENTIVE_TEMPERATURE:-0.25}"
 INCENTIVE_FLOOR="${INCENTIVE_FLOOR:-0.002}"
@@ -86,6 +87,7 @@ MINER_CMD=(
   --axon.port "$MINER_PORT"
   --blacklist.force_validator_permit
   --miner.training_workspace "$ROOT_DIR/artifacts/miner_training/$MINER_WALLET_HOTKEY"
+  --miner.response_mode "$MINER_RESPONSE_MODE"
 )
 
 if [[ "$ENABLE_AUTORESEARCH" == "1" ]]; then

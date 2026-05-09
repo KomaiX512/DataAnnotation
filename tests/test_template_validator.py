@@ -34,7 +34,7 @@ from template.hazard.serving import CommercialServingGateway, PromotionRegistry
 from template.miner import HazardMinerEngine
 from template.miner.training import TrainingPipeline, TrainingSettings
 from template.protocol import HazardDetection, ModelCheckpoint, TrainingManifest
-from template.validator.forward import forward
+from template.validator.forward import forward, _validate_response_integrity
 from template.validator.reward import get_rewards
 
 
@@ -138,6 +138,8 @@ def test_training_pipeline_creates_real_candidate_manifest(tmp_path):
             autoresearch_max_iters=1,
             autoresearch_experiment_minutes=1,
             autoresearch_log_level="INFO",
+            random_hpo_draw=False,
+            hpo_seed=0,
         )
     )
     manifest = pipeline.run(
@@ -187,6 +189,22 @@ def test_broad_softmax_pays_multiple_value_adding_miners():
     assert shaped[0] == 0.0
     assert (shaped[1:] > 0.0).all()
     assert abs(float(shaped.sum()) - 1.0) < 1e-6
+
+
+def test_promotion_registry_prefers_recent_high_quality_models():
+    registry = PromotionRegistry(
+        min_promotion_score=0.5,
+        recency_decay=0.01,
+        min_live_multiplier=0.3,
+    )
+    assert registry.maybe_promote(uid=1, model_hash="a" * 64, score=0.9, step=100)
+    assert registry.maybe_promote(uid=2, model_hash="b" * 64, score=0.86, step=140)
+    top_now = registry.top_models(current_step=140, limit=1)
+    assert top_now[0].uid == 2
+    # At very late steps both entries decay toward the floor multiplier, but
+    # the stronger base score should still remain competitive.
+    top_late = registry.top_models(current_step=10_000, limit=2)
+    assert len(top_late) == 2
 
 
 def test_isolated_validator_miner_training_then_inference(tmp_path):
@@ -271,7 +289,9 @@ def test_isolated_validator_miner_training_then_inference(tmp_path):
             for uid, item in zip(uids, breakdowns):
                 self.inference_scores[uid] = item.inference_score
                 self.training_scores[uid] = item.training_score
-            self.last_serving_model_hash = self.serving_gateway.select_model_hash()
+            self.last_serving_model_hash = self.serving_gateway.select_model_hash(
+                current_step=self.step
+            )
 
     validator = LocalValidator()
     asyncio.run(forward(validator))
@@ -282,3 +302,35 @@ def test_isolated_validator_miner_training_then_inference(tmp_path):
     asyncio.run(forward(validator))
     assert validator.inference_scores[1] >= 0.0
     assert validator.last_serving_model_hash is not None
+
+
+def test_response_integrity_rejects_nonce_mismatch():
+    response = HazardDetection(task_id="t-1", challenge_nonce="bad-nonce")
+    with pytest.raises(ValueError, match="Challenge nonce mismatch"):
+        _validate_response_integrity(
+            response=response,
+            expected_task_id="t-1",
+            expected_nonce="good-nonce",
+        )
+
+
+def test_response_integrity_rejects_invalid_manifest_fields():
+    response = HazardDetection(
+        task_id="t-2",
+        challenge_nonce="abc123abc123abcd",
+        submitted_training_manifest=TrainingManifest(
+            parent_model_hash="a" * 64,
+            candidate_model_hash="b" * 64,
+            candidate_model_uri="https://example.com/model.pt",
+            config_hash="c" * 64,
+            dataset_lineage_hash="d" * 64,
+            recipe_uri="ipfs://recipe",
+            metrics={},
+        ),
+    )
+    with pytest.raises(ValueError, match="candidate_model_uri must use r2:// scheme"):
+        _validate_response_integrity(
+            response=response,
+            expected_task_id="t-2",
+            expected_nonce="abc123abc123abcd",
+        )

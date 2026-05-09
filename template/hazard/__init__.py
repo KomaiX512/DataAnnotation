@@ -13,3 +13,31 @@ from .r2_storage import (
     download_checkpoint_from_r2,
 )
 
+# ---- Dual-flywheel additions ----
+from .image_corpus import (
+    BenchmarkImage,
+    GoldenAnnotation,
+    GoldenImage,
+    ImageCorpus,
+    ImageCorpusConfig,
+    TrainingImage,
+    UnlabeledImage,
+)
+from .golden_injection import GoldenInjector, InjectionPlan
+from .annotation_eval import (
+    AnnotationFidelityScorer,
+    ConsensusComponents,
+    ConsensusScorer,
+    FidelityComponents,
+    PerMinerAnnotationScore,
+    cosine_similarity,
+    evaluate_round_annotations,
+    iou_xyxy,
+)
+from .model_eval import ModelAccuracyComponents, ModelAccuracyEvaluator
+from .dataset_assembler import (
+    AdoptionLedger,
+    DatasetAssembler,
+    WinningAnnotation,
+)
+from .dual_reward import DualFlywheelBreakdown, DualFlywheelRewardComposer

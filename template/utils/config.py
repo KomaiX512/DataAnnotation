@@ -204,6 +204,46 @@ def add_miner_args(cls, parser):
         help="Autoresearch log level.",
         default="INFO",
     )
+    parser.add_argument(
+        "--miner.response_mode",
+        type=str,
+        choices=["standard", "replay_nonce", "malformed_manifest", "wrong_model_hash"],
+        help="Stress-test mode for miner response shaping.",
+        default="standard",
+    )
+
+    parser.add_argument(
+        "--miner.annotation_backend",
+        type=str,
+        choices=["deterministic", "yolo"],
+        help="Annotation backend for dual-flywheel tasks (deterministic for CI; yolo uses fine-tuned weights).",
+        default="deterministic",
+    )
+
+    parser.add_argument(
+        "--miner.dual_flywheel_r2_prefix",
+        type=str,
+        help="R2 key prefix for dual-flywheel artifacts (per-task subfolders are appended).",
+        default="miners/dual_flywheel",
+    )
+
+    parser.add_argument(
+        "--miner.random_hpo_draw",
+        action="store_true",
+        help=(
+            "Dual-flywheel / training: pick one random hyperparameter bundle from the autoresearch "
+            "grid (use with --miner.hpo_seed so miners diverge). Mutually exclusive with autoresearch "
+            "when autoresearch is off."
+        ),
+        default=False,
+    )
+
+    parser.add_argument(
+        "--miner.hpo_seed",
+        type=int,
+        help="Seed for --miner.random_hpo_draw (different seeds => different hyperparameter draws).",
+        default=0,
+    )
 
     parser.add_argument(
         "--wandb.project_name",
@@ -222,6 +262,16 @@ def add_miner_args(cls, parser):
 
 def add_validator_args(cls, parser):
     """Add validator specific arguments to the parser."""
+
+    parser.add_argument(
+        "--neuron.forward_step_sleep_seconds",
+        type=float,
+        help=(
+            "Wall-clock seconds to sleep after each successful validation step (operator pacing; "
+            "e.g. 300 for five-minute rounds)."
+        ),
+        default=0.0,
+    )
 
     parser.add_argument(
         "--neuron.name",
@@ -311,6 +361,18 @@ def add_validator_args(cls, parser):
         help="Minimum final score required for model promotion.",
         default=0.75,
     )
+    parser.add_argument(
+        "--neuron.serving_recency_decay",
+        type=float,
+        help="Linear decay factor for promoted model serving priority by age-in-steps.",
+        default=0.003,
+    )
+    parser.add_argument(
+        "--neuron.serving_min_live_multiplier",
+        type=float,
+        help="Minimum recency multiplier retained for older promoted models.",
+        default=0.35,
+    )
 
     parser.add_argument(
         "--neuron.baseline_checkpoint_uri",
@@ -352,6 +414,175 @@ def add_validator_args(cls, parser):
         type=float,
         help="Minimum EMA score required before a miner receives broad-softmax share.",
         default=0.05,
+    )
+
+    # ---------- Dual-flywheel (annotation + training) configuration ----------
+    parser.add_argument(
+        "--neuron.task_mode",
+        type=str,
+        choices=["legacy_hazard_detection", "dual_flywheel"],
+        help=(
+            "Validator orchestration mode. 'dual_flywheel' dispatches "
+            "AnnotationAndTrainingTask synapses, scores annotations against the "
+            "Golden Set + consensus, evaluates miner checkpoints, and assembles "
+            "a per-image_id commercial dataset."
+        ),
+        default="dual_flywheel",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_image_cache_root",
+        type=str,
+        help=(
+            "Local filesystem root where the validator materializes images for "
+            "miner consumption. Each image is keyed by its content-hash image_id."
+        ),
+        default=str(Path(__file__).resolve().parents[2] / "data" / "flywheel" / "image_cache"),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_image_serving_base_url",
+        type=str,
+        help=(
+            "Optional public base URL prefix for serving images to miners. When "
+            "empty the validator emits file:// URIs (single-host / localnet)."
+        ),
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_dataset_id",
+        type=str,
+        help="Hugging Face dataset id for the golden labeled construction-safety dataset.",
+        default="keremberke/construction-safety-object-detection",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_split",
+        type=str,
+        help="Split within the golden dataset to load before applying the 30/70 partition.",
+        default="train",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_ratio",
+        type=float,
+        help="Fraction of the labeled construction-safety dataset reserved as the validator-only Golden Set.",
+        default=0.3,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_split_seed",
+        type=int,
+        help="Seed used to deterministically split the labeled dataset into Golden vs Training pools.",
+        default=20260509,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_annotation_dataset_ids",
+        type=str,
+        help=(
+            "Comma-separated Hugging Face dataset ids for the unlabeled annotation pool. "
+            "Use hub_id@split per entry (e.g. org/ds@test); otherwise flywheel_annotation_split applies."
+        ),
+        default=(
+            "keremberke/construction-safety-object-detection@test,"
+            "keremberke/construction-safety-object-detection@validation"
+        ),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_annotation_split",
+        type=str,
+        help="Split name to load from each annotation dataset (use 'train' if unsure).",
+        default="train",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_annotation_max_per_dataset",
+        type=int,
+        help="Per-dataset cap for the unlabeled annotation pool. Use 0 for no cap.",
+        default=512,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_benchmark_dataset_id",
+        type=str,
+        help=(
+            "Cross-domain Hugging Face dataset id used by the validator to detect "
+            "miner overfitting (never shown to miners)."
+        ),
+        default="rishitdagli/cppe-5",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_benchmark_split",
+        type=str,
+        help="Split name to load from the cross-domain benchmark dataset.",
+        default="test",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_benchmark_max_samples",
+        type=int,
+        help="Maximum benchmark samples loaded per round. Use 0 for no cap.",
+        default=64,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_hf_revision",
+        type=str,
+        help=(
+            "Hugging Face git revision for Hub datasets (use refs/convert/parquet when the "
+            "repo still ships a legacy dataset script). Empty = Hub default branch loader."
+        ),
+        default="refs/convert/parquet",
+    )
+    parser.add_argument(
+        "--neuron.flywheel_annotation_request_size",
+        type=int,
+        help="Total images per AnnotationAndTrainingTask request (golden + non-golden).",
+        default=10,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_injection_per_request",
+        type=int,
+        help="Number of Golden images injected (unlabeled to the miner) into each annotation request.",
+        default=2,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_training_images_per_request",
+        type=int,
+        help="Number of labeled training images surfaced to miners for fine-tuning per round.",
+        default=16,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_alpha_annotation",
+        type=float,
+        help="Annotation-fidelity weight in the final on-chain weight formula.",
+        default=0.4,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_beta_model",
+        type=float,
+        help="Model-accuracy weight in the final on-chain weight formula.",
+        default=0.4,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_gamma_adoption",
+        type=float,
+        help="Adoption-bonus weight in the final on-chain weight formula.",
+        default=0.2,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_hallucination_penalty",
+        type=float,
+        help="Multiplicative penalty applied per hallucinated annotation on a Golden image.",
+        default=0.5,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_commercial_dataset_prefix",
+        type=str,
+        help=(
+            "Object-storage prefix (file://, r2://, or s3://) where the assembled per-image_id "
+            "winning annotations are exported as the subnet's commercial dataset."
+        ),
+        default=str(
+            (Path(__file__).resolve().parents[2] / "artifacts" / "commercial_dataset").as_uri()
+        ),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_commercial_export_every",
+        type=int,
+        help="Number of validator forward steps between commercial dataset exports.",
+        default=10,
     )
 
     parser.add_argument(

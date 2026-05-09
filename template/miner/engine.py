@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 import base64
+import copy
 from pathlib import Path
 from typing import List
 
@@ -43,9 +44,16 @@ class HazardMinerEngine:
                 autoresearch_log_level=str(
                     getattr(getattr(config, "miner", object()), "autoresearch_log_level", "INFO")
                 ),
+                random_hpo_draw=bool(
+                    getattr(getattr(config, "miner", object()), "random_hpo_draw", False)
+                ),
+                hpo_seed=int(getattr(getattr(config, "miner", object()), "hpo_seed", 0)),
             )
         )
         self.current_manifest: TrainingManifest | None = None
+        self.response_mode = str(
+            getattr(getattr(config, "miner", object()), "response_mode", "standard")
+        ).strip()
 
     def run(self, synapse: HazardDetection) -> HazardDetection:
         started_at = time.time()
@@ -64,6 +72,7 @@ class HazardMinerEngine:
                 f"r2_uri={getattr(synapse.submitted_training_manifest, 'candidate_model_uri', None)} "
                 f"duration_ms={synapse.duration_ms}"
             )
+        self._apply_response_mode(synapse)
         return synapse
 
     def _solve_inference(self, synapse: HazardDetection) -> None:
@@ -121,9 +130,11 @@ class HazardMinerEngine:
         self.current_manifest = manifest
         synapse.submitted_training_manifest = manifest
         synapse.miner_r2_credentials = load_r2_credentials_from_env()
+        account = synapse.miner_r2_credentials.account_id
+        masked_account = f"{account[:3]}***{account[-3:]}" if len(account) >= 6 else "***"
         bt.logging.info(
             f"event=handshake_1_credentials_exchange task_id={synapse.task_id} "
-            f"account_id={synapse.miner_r2_credentials.account_id} "
+            f"account_id={masked_account} "
             f"bucket={synapse.miner_r2_credentials.bucket_name} "
             f"endpoint={synapse.miner_r2_credentials.s3_endpoint}"
         )
@@ -176,4 +187,26 @@ class HazardMinerEngine:
                 confidence=0.75,
             )
         ]
+
+    def _apply_response_mode(self, synapse: HazardDetection) -> None:
+        if self.response_mode == "standard":
+            return
+        if self.response_mode == "replay_nonce":
+            synapse.challenge_nonce = "0000000000000000"
+            bt.logging.warning("event=miner_response_mode_applied mode=replay_nonce")
+            return
+        if self.response_mode == "wrong_model_hash":
+            synapse.model_hash = hashlib.sha256(
+                f"wrong:{synapse.task_id}".encode("utf-8")
+            ).hexdigest()
+            bt.logging.warning("event=miner_response_mode_applied mode=wrong_model_hash")
+            return
+        if (
+            self.response_mode == "malformed_manifest"
+            and synapse.submitted_training_manifest is not None
+        ):
+            bad_manifest = copy.deepcopy(synapse.submitted_training_manifest)
+            bad_manifest.dataset_lineage_hash = "bad"
+            synapse.submitted_training_manifest = bad_manifest
+            bt.logging.warning("event=miner_response_mode_applied mode=malformed_manifest")
 

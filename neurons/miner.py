@@ -1,7 +1,7 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
+# TODO(developer):TECHNOLOGY NUCLEUS
+# Copyright © 2023 TECHNOLOGY NUCLEUS
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -23,7 +23,7 @@ import bittensor as bt
 
 # Bittensor Miner Template:
 import template
-from template.miner import HazardMinerEngine
+from template.miner import AnnotationTrainingEngine, HazardMinerEngine
 
 # import base miner class which takes care of most of the boilerplate
 from template.base.miner import BaseMinerNeuron
@@ -41,6 +41,12 @@ class Miner(BaseMinerNeuron):
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
         self.engine = HazardMinerEngine(config=self.config)
+        self.annotation_engine = AnnotationTrainingEngine(config=self.config)
+        self.axon.attach(
+            forward_fn=self.forward_annotation_training,
+            blacklist_fn=self.blacklist_annotation_training,
+            priority_fn=self.priority_annotation_training,
+        )
 
     async def forward(
         self, synapse: template.protocol.HazardDetection
@@ -52,6 +58,21 @@ class Miner(BaseMinerNeuron):
             synapse = self.engine.run(synapse)
         except Exception as exc:
             bt.logging.error(f"Miner failed task {synapse.task_id}: {exc}")
+            synapse.error_message = str(exc)
+        return synapse
+
+    async def forward_annotation_training(
+        self, synapse: template.protocol.AnnotationAndTrainingTask
+    ) -> template.protocol.AnnotationAndTrainingTask:
+        """
+        Dual-flywheel round: fine-tune on labeled URLs, annotate unlabeled URLs, upload to R2.
+        """
+        try:
+            synapse = self.annotation_engine.run(
+                synapse, miner_hotkey=self.wallet.hotkey.ss58_address
+            )
+        except Exception as exc:
+            bt.logging.error(f"AnnotationTraining task {synapse.task_id} failed: {exc}")
             synapse.error_message = str(exc)
         return synapse
 
@@ -118,6 +139,34 @@ class Miner(BaseMinerNeuron):
         )
         return False, "Hotkey recognized!"
 
+    async def blacklist_annotation_training(
+        self, synapse: template.protocol.AnnotationAndTrainingTask
+    ) -> typing.Tuple[bool, str]:
+        if synapse.dendrite is None or synapse.dendrite.hotkey is None:
+            bt.logging.warning(
+                "Received a request without a dendrite or hotkey."
+            )
+            return True, "Missing dendrite or hotkey"
+
+        if (
+            not self.config.blacklist.allow_non_registered
+            and synapse.dendrite.hotkey not in self.metagraph.hotkeys
+        ):
+            bt.logging.trace(
+                f"Blacklisting un-registered hotkey {synapse.dendrite.hotkey}"
+            )
+            return True, "Unrecognized hotkey"
+        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+
+        if self.config.blacklist.force_validator_permit:
+            if not self.metagraph.validator_permit[uid]:
+                bt.logging.warning(
+                    f"Blacklisting a request from non-validator hotkey {synapse.dendrite.hotkey}"
+                )
+                return True, "Non-validator hotkey"
+
+        return False, "Hotkey recognized!"
+
     async def priority(
         self, synapse: template.protocol.HazardDetection
     ) -> float:
@@ -156,6 +205,18 @@ class Miner(BaseMinerNeuron):
             f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}"
         )
         return priority
+
+    async def priority_annotation_training(
+        self, synapse: template.protocol.AnnotationAndTrainingTask
+    ) -> float:
+        if synapse.dendrite is None or synapse.dendrite.hotkey is None:
+            bt.logging.warning(
+                "Received a request without a dendrite or hotkey."
+            )
+            return 0.0
+
+        caller_uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        return float(self.metagraph.S[caller_uid])
 
 
 # This is the main function, which runs the miner.

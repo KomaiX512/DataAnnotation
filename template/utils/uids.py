@@ -1,7 +1,10 @@
+import os
 import random
 import bittensor as bt
 import numpy as np
 from typing import List
+
+from template.utils.localnet_axon import localnet_port_map_hotkeys
 
 
 def check_uid_availability(
@@ -49,6 +52,21 @@ def get_random_uids(self, k: int, exclude: List[int] = None) -> np.ndarray:
             avail_uids.append(uid)
             if uid_is_not_excluded:
                 candidate_uids.append(uid)
+    target_ss58 = os.getenv("LOCALNET_TARGET_MINER_SS58", "").strip()
+    if target_ss58:
+        matched = [uid for uid in candidate_uids if self.metagraph.hotkeys[uid] == target_ss58]
+        if matched:
+            candidate_uids = matched
+            avail_uids = [uid for uid in avail_uids if uid in matched]
+    # When running N physical miners behind a port map, only sample UIDs whose hotkeys are
+    # in the map; otherwise multiple chain UIDs can resolve to the same port and axon
+    # signature verification fails.
+    port_map_hks = localnet_port_map_hotkeys()
+    if port_map_hks:
+        candidate_uids = [
+            uid for uid in candidate_uids if self.metagraph.hotkeys[uid] in port_map_hks
+        ]
+        avail_uids = [uid for uid in avail_uids if self.metagraph.hotkeys[uid] in port_map_hks]
     # If k is larger than the eligible non-excluded uids, only query eligible miners.
     k = min(k, len(candidate_uids))
     # Check if candidate_uids contain enough for querying, if not grab all avaliable uids

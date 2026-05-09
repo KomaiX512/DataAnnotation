@@ -7,6 +7,67 @@ from urllib.parse import urlparse
 from template.protocol import R2AccessCredentials
 
 
+def upload_bytes_to_r2(
+    data: bytes,
+    *,
+    object_key: str,
+    creds: R2AccessCredentials,
+    content_type: str = "application/octet-stream",
+) -> str:
+    try:
+        import boto3
+    except ImportError as exc:
+        raise ImportError("boto3 is required for Cloudflare R2 uploads.") from exc
+    client = boto3.client(
+        "s3",
+        endpoint_url=creds.s3_endpoint,
+        aws_access_key_id=creds.access_key_id,
+        aws_secret_access_key=creds.secret_access_key,
+        region_name="auto",
+    )
+    client.put_object(
+        Bucket=creds.bucket_name,
+        Key=object_key,
+        Body=data,
+        ContentType=content_type,
+    )
+    return f"r2://{creds.bucket_name}/{object_key}"
+
+
+def upload_directory_to_r2(
+    local_dir: Path,
+    *,
+    key_prefix: str,
+    creds: R2AccessCredentials,
+) -> str:
+    """
+    Upload every file under ``local_dir`` preserving relative paths beneath ``key_prefix``.
+
+    ``key_prefix`` should use forward slashes and typically end with ``/``.
+    """
+    try:
+        import boto3
+    except ImportError as exc:
+        raise ImportError("boto3 is required for Cloudflare R2 uploads.") from exc
+    if not local_dir.is_dir():
+        raise NotADirectoryError(f"Expected directory: {local_dir}")
+    prefix = key_prefix.rstrip("/") + "/"
+    client = boto3.client(
+        "s3",
+        endpoint_url=creds.s3_endpoint,
+        aws_access_key_id=creds.access_key_id,
+        aws_secret_access_key=creds.secret_access_key,
+        region_name="auto",
+    )
+    for path in sorted(local_dir.rglob("*")):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(local_dir).as_posix()
+        object_key = f"{prefix}{rel}"
+        client.upload_file(str(path), creds.bucket_name, object_key)
+    return f"r2://{creds.bucket_name}/{prefix}"
+
+
 def load_r2_credentials_from_env() -> R2AccessCredentials:
     required = {
         "R2_ACCOUNT_ID": os.getenv("R2_ACCOUNT_ID", "").strip(),

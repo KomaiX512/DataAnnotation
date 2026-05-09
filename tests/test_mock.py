@@ -19,4 +19,4 @@ def test_promotion_registry_and_gateway():
     )
     assert promoted is True
     gateway = CommercialServingGateway(registry)
-    assert gateway.select_model_hash() == "model-hash-xyz"
+    assert gateway.select_model_hash(current_step=12) == "model-hash-xyz"
