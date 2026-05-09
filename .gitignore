@@ -170,5 +170,39 @@ testing/
 artifacts/
 runs/
 subtensor/
+# ML Models / Checkpoints
 *.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.ckpt
+*.h5
+*.pb
+*.tflite
+*.mlmodel
+*.caffemodel
+
+# Datasets / Data files
+*.csv
+*.jsonl
+*.parquet
+*.arrow
+*.npy
+*.npz
+*.hdf5
+*.h5
+*.pkl
+*.pickle
+*.feather
+
+# Data directories (all runtime data/cache)
+data/
+datasets/
+
+# Logs
+*.log
+logs/
+
+# PDFs
 *.pdf
