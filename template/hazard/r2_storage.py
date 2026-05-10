@@ -2,9 +2,70 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Tuple
 from urllib.parse import urlparse
 
 from template.protocol import R2AccessCredentials
+
+
+def r2_uri_bucket_key(uri: str) -> Tuple[str, str]:
+    """Return ``(bucket, object_key)`` from an ``r2://bucket/key`` URI."""
+    parsed = urlparse(uri)
+    if parsed.scheme != "r2":
+        raise ValueError(f"Expected r2:// URI, got {uri!r}")
+    bucket = parsed.netloc
+    key = parsed.path.lstrip("/")
+    if not bucket or not key:
+        raise ValueError(f"Invalid r2 URI (missing bucket or key): {uri!r}")
+    return bucket, key
+
+
+def presigned_get_url_expires_seconds() -> int:
+    raw = os.getenv("R2_PRESIGNED_EXPIRES_SECONDS", "7200").strip()
+    return max(300, min(604800, int(raw)))
+
+
+def generate_presigned_get_url(
+    *,
+    creds: R2AccessCredentials,
+    bucket: str,
+    object_key: str,
+    expires_in: int | None = None,
+) -> str:
+    """
+    Issue a short-lived HTTPS GET URL for Cloudflare R2 (S3-compatible).
+
+    Miners should use this for validator-facing downloads instead of embedding
+    long-lived API keys in synapses.
+    """
+    try:
+        import boto3
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("boto3 is required for presigned R2 URLs.") from exc
+    ttl = int(expires_in if expires_in is not None else presigned_get_url_expires_seconds())
+    if ttl < 300 or ttl > 604800:
+        raise ValueError("expires_in must be between 300 and 604800 seconds.")
+    client = boto3.client(
+        "s3",
+        endpoint_url=creds.s3_endpoint,
+        aws_access_key_id=creds.access_key_id,
+        aws_secret_access_key=creds.secret_access_key,
+        aws_session_token=creds.token or None,
+        region_name="auto",
+    )
+    params = {"Bucket": bucket, "Key": object_key}
+    url: str = client.generate_presigned_url(
+        "get_object",
+        Params=params,
+        ExpiresIn=ttl,
+    )
+    return url
+
+
+def presign_r2_object_uri(*, creds: R2AccessCredentials, r2_uri: str) -> str:
+    """Build a presigned HTTPS GET URL for a single object behind ``r2_uri``."""
+    bucket, key = r2_uri_bucket_key(r2_uri)
+    return generate_presigned_get_url(creds=creds, bucket=bucket, object_key=key)
 
 
 def upload_bytes_to_r2(

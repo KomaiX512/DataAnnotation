@@ -32,7 +32,8 @@ RUN_SECONDS="${RUN_SECONDS:-600}"
 MAX_TRAINING_SECONDS="${MAX_TRAINING_SECONDS:-300}"
 TRAINING_TIMEOUT="${TRAINING_TIMEOUT:-900}"
 NEURON_SAMPLE_SIZE="${NEURON_SAMPLE_SIZE:-3}"
-# Default 300s = 5 minutes between successful validator steps (operator pacing).
+# Pacing between successful validator steps (not a passive R2 poller).
+# Default 300s ~= "5-minute watch" in operator docs — forward_step_sleep_seconds only.
 FORWARD_STEP_SLEEP_SECONDS="${FORWARD_STEP_SLEEP_SECONDS:-300}"
 
 AUTORESEARCH_MAX_ITERS="${AUTORESEARCH_MAX_ITERS:-2}"
@@ -224,3 +225,13 @@ log "running ${RUN_SECONDS}s (set RUN_SECONDS to change)"
 sleep "$RUN_SECONDS"
 cleanup
 log "done. Logs under $LOG_DIR"
+
+if [[ "${SKIP_VALIDATOR_GATE:-0}" != "1" ]]; then
+  export GATE_JSON_OUT="${GATE_JSON_OUT:-$LOG_DIR/gate_${STAMP}.json}"
+  log "validator release gate -> $GATE_JSON_OUT"
+  if ! "$PYTHON_BIN" "$ROOT_DIR/scripts/validator_gate_report.py" "$vlog"; then
+    log "VALIDATOR GATE: NO-GO (set SKIP_VALIDATOR_GATE=1 to bypass)"
+    exit 1
+  fi
+  log "VALIDATOR GATE: GO"
+fi

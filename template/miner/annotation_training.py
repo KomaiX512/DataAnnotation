@@ -14,6 +14,7 @@ import bittensor as bt
 
 from template.hazard.r2_storage import (
     load_r2_credentials_from_env,
+    presign_r2_object_uri,
     upload_bytes_to_r2,
     upload_directory_to_r2,
 )
@@ -306,6 +307,14 @@ class AnnotationTrainingEngine:
                 creds=creds,
                 content_type="application/json",
             )
+            annotations_presigned = presign_r2_object_uri(creds=creds, r2_uri=annotations_uri)
+            manifest = manifest.model_copy(
+                update={
+                    "candidate_model_uri": presign_r2_object_uri(
+                        creds=creds, r2_uri=manifest.candidate_model_uri
+                    )
+                }
+            )
 
             recipe_path = train_root / "recipe.json"
             training_config: dict = {}
@@ -314,12 +323,13 @@ class AnnotationTrainingEngine:
             training_config["annotation_backend"] = self.annotation_backend
             training_config["model_checkpoint_prefix_uri"] = model_checkpoint_uri
             training_config["annotations_object_key"] = annotations_key
+            training_config["annotations_r2_uri"] = annotations_uri
 
-            synapse.annotations_uri = annotations_uri
+            synapse.annotations_uri = annotations_presigned
             synapse.model_checkpoint_uri = model_checkpoint_uri
             synapse.training_config = training_config
             synapse.submitted_training_manifest = manifest
-            synapse.miner_r2_credentials = creds
+            synapse.miner_r2_credentials = None
             synapse.claim_improvement = float(manifest.metrics.get("uplift", 0.0))
             synapse.error_message = None
         except (URLError, OSError, ValueError, RuntimeError, ImportError) as exc:

@@ -1,8 +1,11 @@
 from __future__ import annotations
-from pathlib import Path
-from dataclasses import dataclass
-from urllib.parse import urlparse
+
 import os
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
 import bittensor as bt
 
 from template.hazard.dataset import HazardDatasetManager
@@ -74,9 +77,19 @@ class GoldenSetEvaluator:
             if not path.exists():
                 raise FileNotFoundError(f"Candidate checkpoint does not exist: {path}")
             return path
+        if parsed.scheme in ("http", "https"):
+            target = Path("/tmp") / f"candidate-{candidate_hash}.pt"
+            req = Request(model_uri, headers={"User-Agent": "hazard-validator-golden-eval/1.0"})
+            with urlopen(req, timeout=600) as resp:
+                data = resp.read()
+            target.write_bytes(data)
+            return target
         if parsed.scheme == "r2":
             if miner_r2_credentials is None:
-                raise ValueError("R2 candidate model requires miner_r2_credentials handshake.")
+                raise ValueError(
+                    "r2:// candidate URIs require validator-side credentials; "
+                    "use an https:// presigned URL from the miner instead."
+                )
             target = Path("/tmp") / f"candidate-{candidate_hash}.pt"
             return download_checkpoint_from_r2(
                 model_uri,

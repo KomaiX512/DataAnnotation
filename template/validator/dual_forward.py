@@ -6,8 +6,10 @@ Each step the validator:
   1. Builds an AnnotationAndTrainingTask synapse for every queried miner that
      mixes ``golden_per_request`` Golden Set images with ``request_size -
      golden_per_request`` Annotation Pool images. Training images come from the
-     labeled Training Pool. Image IDs use SHA-256(image_bytes) -- per-image
-     traceability across miners.
+     labeled Training Pool. Canonical ``image_id`` values remain SHA-256(original
+     corpus bytes) for scoring, while miners receive metadata-stripped JPEGs at
+     opaque URLs plus per-image timing jitter so Golden rows are not trivially
+     fingerprinted.
 
   2. Dispatches synapses to all selected miners in parallel via the dendrite
      and waits for their responses.
@@ -15,6 +17,9 @@ Each step the validator:
   3. For each response:
        * Downloads ``annotations.json`` from the miner's R2 bucket.
        * Validates per-image_id schema, signed model_version, hallucination caps.
+       * Rejects duplicate annotation structures (per image and full payload)
+         and checkpoint hashes already claimed by another UID this round / in
+         the persisted registry.
        * Downloads the miner's fine-tuned checkpoint and scores it against the
          Golden Set + Cross-Domain Benchmark.
 
@@ -31,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
-import io
 import json
 import os
 import re
@@ -46,63 +50,45 @@ import bittensor as bt
 from template.hazard.annotation_eval import (
     AnnotationFidelityScorer,
     ConsensusScorer,
-    PerMinerAnnotationScore,
     evaluate_round_annotations,
 )
-from template.hazard.dataset_assembler import DatasetAssembler, WinningAnnotation
-from template.hazard.dual_reward import (
-    DualFlywheelBreakdown,
-    DualFlywheelRewardComposer,
+from template.hazard.dataset_assembler import DatasetAssembler
+from template.hazard.dual_reward import DualFlywheelRewardComposer
+from template.hazard.annotation_image_serve import (
+    build_camouflaged_annotation_images,
+    cleanup_ephemeral_annotation_files,
 )
 from template.hazard.golden_injection import GoldenInjector, InjectionPlan
 from template.hazard.image_corpus import ImageCorpus, TrainingImage
 from template.hazard.model_eval import ModelAccuracyComponents, ModelAccuracyEvaluator
+from template.hazard.submission_dedup import AnnotationDuplicateTracker
 from template.protocol import (
     AnnotationAndTrainingTask,
     AnnotationsFilePayload,
-    ImageAnnotationDocument,
     LabeledTrainingImage,
     ModelCheckpoint,
     PerImageAnnotationItem,
-    R2AccessCredentials,
     TrainingAnnotationLabel,
-    UnlabeledAnnotationImage,
 )
 from template.utils.localnet_axon import localnet_miner_port_override
 from template.utils.uids import get_random_uids
 
 
-# Annotations.json URI must be downloaded by the validator. We support file://
-# (single-host development), r2:// and s3:// schemes.
-def _download_uri_bytes(uri: str, *, creds: Optional[R2AccessCredentials] = None) -> bytes:
+def _download_miner_artifact_bytes(uri: str) -> bytes:
+    """Fetch ``annotations.json`` using ``file://`` or short-lived ``https://`` URLs only."""
     parsed = urlparse(uri)
     if parsed.scheme == "file":
         return Path(parsed.path).read_bytes()
-    if parsed.scheme in ("r2", "s3"):
-        try:
-            import boto3
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError("boto3 is required to read object-storage annotations.") from exc
-        if creds is None:
-            raise ValueError(f"Cannot download {uri} without R2/S3 credentials.")
-        client = boto3.client(
-            "s3",
-            endpoint_url=creds.s3_endpoint,
-            aws_access_key_id=creds.access_key_id,
-            aws_secret_access_key=creds.secret_access_key,
-            region_name="auto",
-        )
-        bucket = parsed.netloc
-        key = parsed.path.lstrip("/")
-        result = client.get_object(Bucket=bucket, Key=key)
-        return result["Body"].read()
     if parsed.scheme in ("http", "https"):
         from urllib.request import Request, urlopen
 
         req = Request(uri, headers={"User-Agent": "hazard-validator/1.0"})
         with urlopen(req, timeout=120) as resp:
             return resp.read()
-    raise ValueError(f"Unsupported URI scheme for download: {uri}")
+    raise ValueError(
+        f"Unsupported annotations_uri scheme {parsed.scheme!r}; "
+        "miners must return file:// (local tests) or https:// presigned GET URLs."
+    )
 
 
 def _build_challenge_nonce(step: int, uid: int, task_id: str) -> str:
@@ -160,13 +146,6 @@ def _build_training_images(images: Sequence[TrainingImage]) -> List[LabeledTrain
             )
         )
     return payload
-
-
-def _build_annotation_images(plan: InjectionPlan) -> List[UnlabeledAnnotationImage]:
-    return [
-        UnlabeledAnnotationImage(image_url=url, image_id=image_id)
-        for image_id, url in plan.ordered_images
-    ]
 
 
 def _request_timeout(self) -> float:
@@ -228,6 +207,17 @@ def _looks_like_hex_digest(value: str) -> bool:
 async def dual_flywheel_forward(self) -> None:
     """Validator entrypoint for the dual-flywheel mode."""
 
+    ephemeral_annotation_files: List[Path] = []
+    try:
+        await _dual_flywheel_forward_impl(self, ephemeral_annotation_files)
+    finally:
+        cleanup_ephemeral_annotation_files(ephemeral_annotation_files)
+
+
+async def _dual_flywheel_forward_impl(
+    self,
+    ephemeral_annotation_files: List[Path],
+) -> None:
     corpus: ImageCorpus = self.image_corpus
     corpus.ensure_loaded()
     fidelity_scorer: AnnotationFidelityScorer = self.fidelity_scorer
@@ -266,6 +256,10 @@ async def dual_flywheel_forward(self) -> None:
 
     base_model_hash = self.baseline_checkpoint_hash
     timeout = _request_timeout(self)
+    jitter_ms_max = int(
+        getattr(self.config.neuron, "flywheel_annotation_image_jitter_ms", 40) or 0
+    )
+    serving_base = str(getattr(self.config.neuron, "flywheel_image_serving_base_url", "") or "")
 
     plans_by_uid: Dict[int, InjectionPlan] = {}
     synapses_by_uid: Dict[int, AnnotationAndTrainingTask] = {}
@@ -275,11 +269,22 @@ async def dual_flywheel_forward(self) -> None:
         plans_by_uid[uid] = plan
         task_id = f"flywheel-{self.step}-{uid}"
         nonce = _build_challenge_nonce(self.step, uid, task_id)
+        ann_images = await build_camouflaged_annotation_images(
+            corpus=corpus,
+            plan=plan,
+            cache_root=corpus.cache_root,
+            step=int(self.step),
+            uid=int(uid),
+            rng=rng,
+            serving_base_url=serving_base,
+            jitter_ms_max=jitter_ms_max,
+            ephemeral_paths=ephemeral_annotation_files,
+        )
         synapses_by_uid[uid] = AnnotationAndTrainingTask(
             task_id=task_id,
             challenge_nonce=nonce,
             training_images=training_payload,
-            annotation_images=_build_annotation_images(plan),
+            annotation_images=ann_images,
             base_model_hash=base_model_hash,
             baseline_checkpoint=ModelCheckpoint(
                 uri=self.config.neuron.baseline_checkpoint_uri,
@@ -317,6 +322,7 @@ async def dual_flywheel_forward(self) -> None:
     timestamps: Dict[int, str] = {}
     model_accuracy: Dict[int, ModelAccuracyComponents] = {}
     valid_uids: List[int] = []
+    duplicate_tracker = AnnotationDuplicateTracker()
 
     for uid, response in raw_results:
         if response is None:
@@ -334,9 +340,7 @@ async def dual_flywheel_forward(self) -> None:
             continue
 
         try:
-            raw = _download_uri_bytes(
-                response.annotations_uri, creds=response.miner_r2_credentials
-            )
+            raw = _download_miner_artifact_bytes(response.annotations_uri)
             payload = _parse_annotations_payload(raw)
         except Exception as exc:
             bt.logging.error(f"event=dual_flywheel_annotations_download_failure uid={uid} error={exc}")
@@ -355,12 +359,30 @@ async def dual_flywheel_forward(self) -> None:
             bt.logging.warning(f"event=dual_flywheel_no_valid_records uid={uid}")
             continue
 
+        ok_dedup, dedup_reason = duplicate_tracker.check_and_register(uid, valid_records)
+        if not ok_dedup:
+            bt.logging.error(
+                f"event=dual_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason}"
+            )
+            continue
+
+        manifest = response.submitted_training_manifest
+        assert manifest is not None
+        ok_model, model_dedup_reason = self.model_hash_registry.uid_may_use_model_hash(
+            uid, manifest.candidate_model_hash
+        )
+        if not ok_model:
+            bt.logging.error(
+                f"event=dual_flywheel_duplicate_model_hash_rejected uid={uid} "
+                f"detail={model_dedup_reason}"
+            )
+            continue
+
         try:
             accuracy = model_evaluator.evaluate(
                 corpus=corpus,
-                candidate_model_uri=response.submitted_training_manifest.candidate_model_uri,
-                candidate_model_hash=response.submitted_training_manifest.candidate_model_hash,
-                miner_r2_credentials=response.miner_r2_credentials,
+                candidate_model_uri=manifest.candidate_model_uri,
+                candidate_model_hash=manifest.candidate_model_hash,
             )
         except Exception as exc:
             bt.logging.error(f"event=dual_flywheel_model_eval_failure uid={uid} error={exc}")
@@ -368,7 +390,7 @@ async def dual_flywheel_forward(self) -> None:
 
         annotations_by_uid[uid] = valid_records
         miner_hotkeys[uid] = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else ""
-        model_versions[uid] = response.submitted_training_manifest.candidate_model_hash
+        model_versions[uid] = manifest.candidate_model_hash
         timestamps[uid] = _isoformat_utc()
         model_accuracy[uid] = accuracy
         valid_uids.append(uid)

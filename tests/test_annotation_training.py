@@ -167,6 +167,10 @@ def test_annotation_training_engine_mocked_training(tmp_path: Path, monkeypatch:
         lambda *a, **k: "r2://testbucket/miners/dual_flywheel/task-x/annotations.json",
     )
     monkeypatch.setattr(
+        "template.miner.annotation_training.presign_r2_object_uri",
+        lambda *, creds, r2_uri: "https://r2.example.test/" + r2_uri.removeprefix("r2://"),
+    )
+    monkeypatch.setattr(
         "template.miner.annotation_training.upload_directory_to_r2",
         lambda *a, **k: "r2://testbucket/miners/dual_flywheel/task-x/model_checkpoint/",
     )
@@ -247,7 +251,8 @@ def test_annotation_training_engine_mocked_training(tmp_path: Path, monkeypatch:
     )
     out = engine.run(synapse, miner_hotkey="5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
     assert out.error_message is None
-    assert out.annotations_uri.startswith("r2://")
+    assert out.annotations_uri.startswith("https://")
+    assert out.miner_r2_credentials is None
     assert "model_checkpoint" in out.model_checkpoint_uri
     assert out.submitted_training_manifest is not None
     assert out.claim_improvement == pytest.approx(0.42)

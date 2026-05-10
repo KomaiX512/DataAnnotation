@@ -237,7 +237,10 @@ class HazardDetection(bt.Synapse):
     miner_r2_credentials: Optional[R2AccessCredentials] = Field(
         None,
         title="Miner R2 Credentials Handshake",
-        description="Handshake payload giving validator access to miner-hosted checkpoint storage.",
+        description=(
+            "Deprecated. Validators must not require long-lived object-storage keys in-band; "
+            "miners should expose checkpoints via short-lived https:// presigned URLs on the manifest."
+        ),
     )
     miner_storage_signal: Optional[str] = Field(
         None,
@@ -305,7 +308,11 @@ class AnnotationAndTrainingTask(bt.Synapse):
         description="Wall-clock budget for fine-tuning in this round.",
     )
 
-    annotations_uri: str = Field("", title="Annotations Object URI")
+    annotations_uri: str = Field(
+        "",
+        title="Annotations Download URL",
+        description="file:// path for local tests or https:// presigned GET for annotations.json.",
+    )
     model_checkpoint_uri: str = Field("", title="Checkpoint Prefix or Object URI")
     training_config: Dict[str, Any] = Field(default_factory=dict, title="Training Config")
     claim_improvement: Optional[float] = Field(
@@ -322,8 +329,8 @@ class AnnotationAndTrainingTask(bt.Synapse):
         None,
         title="Miner R2 Credentials Handshake",
         description=(
-            "Read credentials the validator uses to download the miner's annotations.json "
-            "and fine-tuned checkpoint from object storage."
+            "Deprecated. Use short-lived https:// presigned GET URLs in annotations_uri and "
+            "submitted_training_manifest.candidate_model_uri instead of passing API keys."
         ),
     )
     duration_ms: Optional[int] = Field(None, ge=0)

@@ -129,14 +129,10 @@ class HazardMinerEngine:
         )
         self.current_manifest = manifest
         synapse.submitted_training_manifest = manifest
-        synapse.miner_r2_credentials = load_r2_credentials_from_env()
-        account = synapse.miner_r2_credentials.account_id
-        masked_account = f"{account[:3]}***{account[-3:]}" if len(account) >= 6 else "***"
+        synapse.miner_r2_credentials = None
         bt.logging.info(
-            f"event=handshake_1_credentials_exchange task_id={synapse.task_id} "
-            f"account_id={masked_account} "
-            f"bucket={synapse.miner_r2_credentials.bucket_name} "
-            f"endpoint={synapse.miner_r2_credentials.s3_endpoint}"
+            f"event=checkpoint_presigned task_id={synapse.task_id} "
+            f"candidate_uri_scheme={manifest.candidate_model_uri.split(':', 1)[0]}"
         )
         synapse.miner_storage_signal = "checkpoint_uploaded"
         bt.logging.info(

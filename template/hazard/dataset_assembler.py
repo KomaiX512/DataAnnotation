@@ -194,13 +194,29 @@ class DatasetAssembler:
         round_id: str,
         commercial_r2_credentials: Optional[R2AccessCredentials] = None,
     ) -> str:
-        """Append the round's winners to the commercial dataset and return its URI."""
+        """Append the round's winners to the commercial dataset and return its URI.
+
+        Golden-track rows (``is_golden``) are used for scoring and adoption only;
+        they are never written to the commercial JSONL so the hidden Golden Set
+        cannot leak to customers.
+        """
         if not winners:
             bt.logging.info("event=dataset_export_skip reason=no_winners")
             return ""
 
+        commercial = [w for w in winners if not w.is_golden]
+        skipped = len(winners) - len(commercial)
+        if skipped:
+            bt.logging.info(
+                "event=dataset_export_golden_filtered count=%d commercial=%d"
+                % (skipped, len(commercial))
+            )
+        if not commercial:
+            bt.logging.info("event=dataset_export_skip reason=no_commercial_rows")
+            return ""
+
         payload_lines = "\n".join(
-            json.dumps(w.to_jsonable(), sort_keys=True) for w in winners
+            json.dumps(w.to_jsonable(), sort_keys=True) for w in commercial
         )
         body = (payload_lines + "\n").encode("utf-8")
 

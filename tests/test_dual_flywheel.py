@@ -405,17 +405,17 @@ def test_dataset_assembler_picks_best_per_image_id(tmp_path):
 
 def test_dataset_assembler_export_local_jsonl(tmp_path):
     corpus = _build_synthetic_corpus(tmp_path)
-    g1 = corpus.golden_images()[0]
+    pool = corpus.annotation_images()[0]
     items = [_miner_item()]
     winners = [
         WinningAnnotation(
-            image_id=g1.image_id,
+            image_id=pool.image_id,
             chosen_uid=7,
             score=0.85,
-            is_golden=True,
-            image_url=g1.image_url,
-            width=g1.width,
-            height=g1.height,
+            is_golden=False,
+            image_url=pool.image_url,
+            width=pool.width,
+            height=pool.height,
             items=items,
             miner_hotkey="hk7",
             model_version="m" * 32,
@@ -429,8 +429,73 @@ def test_dataset_assembler_export_local_jsonl(tmp_path):
     master = target_dir / "commercial-dataset.jsonl"
     assert master.exists()
     parsed = [json.loads(line) for line in master.read_text().splitlines() if line.strip()]
-    assert parsed[0]["image_id"] == g1.image_id
+    assert parsed[0]["image_id"] == pool.image_id
     assert parsed[0]["chosen_uid"] == 7
+
+
+def test_dataset_assembler_export_excludes_golden_rows(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    g1 = corpus.golden_images()[0]
+    pool = corpus.annotation_images()[0]
+    winners = [
+        WinningAnnotation(
+            image_id=g1.image_id,
+            chosen_uid=1,
+            score=0.9,
+            is_golden=True,
+            image_url=g1.image_url,
+            width=g1.width,
+            height=g1.height,
+            items=[_miner_item()],
+            miner_hotkey="hk1",
+            model_version="m" * 32,
+            timestamp="2026-05-09T16:00:00Z",
+        ),
+        WinningAnnotation(
+            image_id=pool.image_id,
+            chosen_uid=2,
+            score=0.7,
+            is_golden=False,
+            image_url=pool.image_url,
+            width=pool.width,
+            height=pool.height,
+            items=[_miner_item(cls="trip_hazard")],
+            miner_hotkey="hk2",
+            model_version="m" * 32,
+            timestamp="2026-05-09T16:00:01Z",
+        ),
+    ]
+    target_dir = tmp_path / "commercial"
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=target_dir.as_uri())
+    assembler.export(winners, round_id="step-g")
+    master = target_dir / "commercial-dataset.jsonl"
+    lines = [ln for ln in master.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["image_id"] == pool.image_id
+    assert row["chosen_uid"] == 2
+
+
+def test_dataset_assembler_export_skips_when_only_golden_winners(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    g1 = corpus.golden_images()[0]
+    winners = [
+        WinningAnnotation(
+            image_id=g1.image_id,
+            chosen_uid=1,
+            score=0.9,
+            is_golden=True,
+            image_url=g1.image_url,
+            width=g1.width,
+            height=g1.height,
+            items=[_miner_item()],
+            miner_hotkey="hk1",
+            model_version="m" * 32,
+            timestamp="2026-05-09T16:00:00Z",
+        ),
+    ]
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=(tmp_path / "c").as_uri())
+    assert assembler.export(winners, round_id="step-x") == ""
 
 
 # ---------------------------------------------------------------------------

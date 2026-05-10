@@ -538,6 +538,15 @@ def add_validator_args(cls, parser):
         default=2,
     )
     parser.add_argument(
+        "--neuron.flywheel_annotation_image_jitter_ms",
+        type=int,
+        help=(
+            "Upper bound (uniform 0..N ms) for async sleep between camouflaged annotation "
+            "images when building miner requests; homogenizes per-image latency."
+        ),
+        default=40,
+    )
+    parser.add_argument(
         "--neuron.flywheel_training_images_per_request",
         type=int,
         help="Number of labeled training images surfaced to miners for fine-tuning per round.",
@@ -583,6 +592,16 @@ def add_validator_args(cls, parser):
         type=int,
         help="Number of validator forward steps between commercial dataset exports.",
         default=10,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_model_eval_docker_image",
+        type=str,
+        help=(
+            "Docker image (built from Dockerfile.flywheel-yolo-eval) used to run YOLO inference "
+            "on miner checkpoints with ``docker run --network none``. When empty, the validator "
+            "loads weights in-process (convenient for CI; use a non-empty image for mainnet)."
+        ),
+        default="",
     )
 
     parser.add_argument(

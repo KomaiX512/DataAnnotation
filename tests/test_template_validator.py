@@ -150,7 +150,7 @@ def test_training_pipeline_creates_real_candidate_manifest(tmp_path):
     )
     assert manifest.parent_model_hash == baseline_hash
     assert manifest.candidate_model_hash
-    assert manifest.candidate_model_uri.startswith(("file://", "r2://"))
+    assert manifest.candidate_model_uri.startswith(("file://", "r2://", "https://", "http://"))
 
 
 def test_golden_evaluator_and_artifact_registry_verify_training(tmp_path):
@@ -262,6 +262,7 @@ def test_isolated_validator_miner_training_then_inference(tmp_path):
                     SimpleNamespace(uid=1, is_serving=True),
                     SimpleNamespace(uid=2, is_serving=True),
                 ],
+                hotkeys=["hk0", "hk1", "hk2"],
                 validator_permit=[False, False, False],
                 S=[0.0, 0.0, 0.0],
             )
@@ -321,16 +322,37 @@ def test_response_integrity_rejects_invalid_manifest_fields():
         submitted_training_manifest=TrainingManifest(
             parent_model_hash="a" * 64,
             candidate_model_hash="b" * 64,
-            candidate_model_uri="https://example.com/model.pt",
+            candidate_model_uri="ftp://example.com/model.pt",
             config_hash="c" * 64,
             dataset_lineage_hash="d" * 64,
             recipe_uri="ipfs://recipe",
             metrics={},
         ),
     )
-    with pytest.raises(ValueError, match="candidate_model_uri must use r2:// scheme"):
+    with pytest.raises(ValueError, match="candidate_model_uri must use r2://"):
         _validate_response_integrity(
             response=response,
             expected_task_id="t-2",
             expected_nonce="abc123abc123abcd",
         )
+
+
+def test_response_integrity_accepts_https_manifest_uri():
+    response = HazardDetection(
+        task_id="t-2b",
+        challenge_nonce="abc123abc123abcd",
+        submitted_training_manifest=TrainingManifest(
+            parent_model_hash="a" * 64,
+            candidate_model_hash="b" * 64,
+            candidate_model_uri="https://example.com/model.pt?sig=1",
+            config_hash="c" * 64,
+            dataset_lineage_hash="d" * 64,
+            recipe_uri="ipfs://recipe",
+            metrics={},
+        ),
+    )
+    _validate_response_integrity(
+        response=response,
+        expected_task_id="t-2b",
+        expected_nonce="abc123abc123abcd",
+    )

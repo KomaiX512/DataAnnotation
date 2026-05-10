@@ -1,31 +1,24 @@
 """
 Model accuracy evaluation for the dual-flywheel subnet.
 
-The validator downloads each miner's fine-tuned checkpoint from R2,
-runs YOLO inference against the validator-only Golden Set and a
-cross-domain Benchmark (Roboflow 100 / cppe-5 family), and produces a
-single ``model_accuracy_score`` in [0, 1] used as ``model_accuracy_score``
-in the final on-chain weight formula.
+The validator downloads each miner's fine-tuned checkpoint via a short-lived
+HTTPS URL (R2 presigned GET), then runs YOLO inference against the
+validator-only Golden Set and a cross-domain Benchmark.
 
-Same metric breakdown as annotation fidelity:
-
-  golden_score = 0.35 * IoU + 0.25 * class+severity match + 0.25 * reasoning
-                 + 0.15 * confidence calibration
-
-Plus a benchmark IoU on the held-out cross-domain split. The combined
-score weights Golden 70% and Benchmark 30% (Golden is the operating
-distribution; benchmark detects overfitting).
+When ``docker_sandbox_image`` is set, inference runs inside ``docker run
+--network none`` so poisoned weights are not executed in the validator process.
 """
 
 from __future__ import annotations
 
-import io
-import os
-import re
+import json
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import bittensor as bt
 
@@ -42,8 +35,6 @@ from template.hazard.image_corpus import (
     _reasoning_for_label,
     _severity_for_label,
 )
-from template.hazard.r2_storage import download_checkpoint_from_r2
-from template.protocol import R2AccessCredentials
 
 
 @dataclass(frozen=True)
@@ -61,7 +52,7 @@ class ModelAccuracyComponents:
 
 @dataclass
 class ModelAccuracyEvaluator:
-    """Real validator-side checkpoint evaluator for the dual-flywheel."""
+    """Validator-side checkpoint evaluator for the dual-flywheel."""
 
     iou_weight: float = 0.35
     class_severity_weight: float = 0.25
@@ -70,6 +61,7 @@ class ModelAccuracyEvaluator:
     golden_blend: float = 0.7
     benchmark_blend: float = 0.3
     download_root: Path = Path("/tmp/flywheel_models")
+    docker_sandbox_image: str = ""
 
     def evaluate(
         self,
@@ -77,11 +69,8 @@ class ModelAccuracyEvaluator:
         corpus: ImageCorpus,
         candidate_model_uri: str,
         candidate_model_hash: str,
-        miner_r2_credentials: Optional[R2AccessCredentials],
     ) -> ModelAccuracyComponents:
-        local_path = self._resolve_checkpoint(
-            candidate_model_uri, candidate_model_hash, miner_r2_credentials
-        )
+        local_path = self._resolve_checkpoint(candidate_model_uri, candidate_model_hash)
         golden = corpus.golden_images()
         benchmark = corpus.benchmark_images()
         if not golden:
@@ -89,10 +78,20 @@ class ModelAccuracyEvaluator:
         if not benchmark:
             raise RuntimeError("Benchmark set is empty; model accuracy cannot be evaluated.")
 
-        model = _load_yolo(local_path)
+        if (self.docker_sandbox_image or "").strip():
+            gi, gcs, gr, gc, gn, bi, bn = self._evaluate_in_docker(
+                local_path=local_path,
+                golden=golden,
+                benchmark=benchmark,
+                candidate_model_hash=candidate_model_hash,
+            )
+        else:
+            model = _load_yolo(local_path)
+            g_preds = _predictions_for_golden_inplace(model, golden)
+            b_preds = _predictions_for_benchmark_inplace(model, benchmark)
+            gi, gcs, gr, gc, gn = self._score_against_golden_from_preds(golden, g_preds)
+            bi, bn = self._score_against_benchmark_from_preds(benchmark, b_preds)
 
-        gi, gcs, gr, gc, gn = self._score_against_golden(model, golden)
-        bi, bn = self._score_against_benchmark(model, benchmark)
         if gn == 0:
             raise RuntimeError(
                 f"No Golden samples produced predictions for checkpoint {candidate_model_hash}."
@@ -117,7 +116,7 @@ class ModelAccuracyEvaluator:
         bt.logging.info(
             f"event=model_accuracy_evaluated candidate_hash={candidate_model_hash} "
             f"golden_iou={gi:.4f} class_sev={gcs:.4f} reasoning={gr:.4f} confidence={gc:.4f} "
-            f"benchmark_iou={bi:.4f} overall={overall:.4f}"
+            f"benchmark_iou={bi:.4f} overall={overall:.4f} sandbox={'docker' if self.docker_sandbox_image else 'inproc'}"
         )
         return ModelAccuracyComponents(
             golden_iou=float(gi),
@@ -131,13 +130,81 @@ class ModelAccuracyEvaluator:
             images_scored=int(gn + bn),
         )
 
-    # ------------------------------------------------------------------ Internals
-    def _resolve_checkpoint(
+    def _evaluate_in_docker(
         self,
-        uri: str,
-        candidate_hash: str,
-        creds: Optional[R2AccessCredentials],
-    ) -> Path:
+        *,
+        local_path: Path,
+        golden: Sequence[GoldenImage],
+        benchmark: Sequence[BenchmarkImage],
+        candidate_model_hash: str,
+    ) -> Tuple[float, float, float, float, int, float, int]:
+        docker_bin = shutil.which("docker")
+        if not docker_bin:
+            raise RuntimeError(
+                "flywheel_model_eval_docker_image is set but ``docker`` was not found on PATH."
+            )
+        job = self.download_root / f"sandbox-{candidate_model_hash}"
+        if job.is_dir():
+            shutil.rmtree(job)
+        job.mkdir(parents=True)
+        images_dir = job / "images"
+        images_dir.mkdir()
+        shutil.copy2(local_path, job / "model.pt")
+        spec_images: list[dict] = []
+        for i, image in enumerate(golden):
+            ext = image.image_path.suffix or ".png"
+            rel = f"images/g{i}{ext}"
+            shutil.copy2(image.image_path, job / rel)
+            spec_images.append({"key": f"g{i}", "relpath": rel})
+        for i, image in enumerate(benchmark):
+            ext = image.image_path.suffix or ".png"
+            rel = f"images/b{i}{ext}"
+            shutil.copy2(image.image_path, job / rel)
+            spec_images.append({"key": f"b{i}", "relpath": rel})
+        spec = {"model_relpath": "model.pt", "images": spec_images}
+        (job / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+
+        image = self.docker_sandbox_image.strip()
+        cmd = [
+            docker_bin,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{job}:/job:rw",
+            image,
+            "/job",
+        ]
+        bt.logging.info("event=model_eval_docker_start image=%s job=%s" % (image, job))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=False)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Docker YOLO worker failed (code=%s): stdout=%r stderr=%r"
+                % (proc.returncode, proc.stdout[-4000:], proc.stderr[-4000:])
+            )
+        pred_path = job / "predictions.json"
+        if not pred_path.is_file():
+            raise RuntimeError("Docker YOLO worker did not write predictions.json")
+        raw = json.loads(pred_path.read_text(encoding="utf-8"))
+        by_key = raw.get("images", {})
+
+        def _pack(key: str) -> Tuple[List[List[float]], List[str], List[float]]:
+            block = by_key.get(key) or {}
+            return (
+                [list(map(float, row)) for row in block.get("xyxy", [])],
+                list(block.get("classes", [])),
+                [float(x) for x in block.get("confs", [])],
+            )
+
+        g_preds = [_pack(f"g{i}") for i in range(len(golden))]
+        b_preds = [_pack(f"b{i}") for i in range(len(benchmark))]
+        gi, gcs, gr, gc, gn = self._score_against_golden_from_preds(golden, g_preds)
+        bi, bn = self._score_against_benchmark_from_preds(benchmark, b_preds)
+        return gi, gcs, gr, gc, gn, bi, bn
+
+    # ------------------------------------------------------------------ Internals
+    def _resolve_checkpoint(self, uri: str, candidate_hash: str) -> Path:
         parsed = urlparse(uri or "")
         if parsed.scheme == "file":
             path = Path(parsed.path)
@@ -149,47 +216,27 @@ class ModelAccuracyEvaluator:
                     raise FileNotFoundError(f"No .pt found under {path}")
                 return resolved
             return path
-        if parsed.scheme == "r2":
-            if creds is None:
-                raise ValueError(
-                    "Candidate model URI uses r2:// but no miner_r2_credentials handshake was supplied."
-                )
+        if parsed.scheme in ("http", "https"):
             self.download_root.mkdir(parents=True, exist_ok=True)
-            if uri.endswith("/"):
-                # Prefix-style: the validator must enumerate files. Pull best.pt or first .pt.
-                key_prefix = parsed.path.lstrip("/")
-                bucket = parsed.netloc
-                target = self.download_root / f"{candidate_hash}_best.pt"
-                _download_best_pt_from_r2_prefix(
-                    bucket=bucket,
-                    prefix=key_prefix,
-                    creds=creds,
-                    target=target,
-                )
-                return target
             target = self.download_root / f"candidate-{candidate_hash}.pt"
-            return download_checkpoint_from_r2(uri, creds=creds, target_path=target)
-        raise ValueError(f"Unsupported candidate model URI scheme: {uri}")
+            _download_url_to_file(uri, target)
+            return target
+        raise ValueError(
+            f"Unsupported candidate model URI scheme {parsed.scheme!r}; "
+            "miners must supply a short-lived https:// presigned GET URL (or file:// for local tests)."
+        )
 
-    def _score_against_golden(
-        self, model, golden: Sequence[GoldenImage]
+    def _score_against_golden_from_preds(
+        self,
+        golden: Sequence[GoldenImage],
+        golden_preds: Sequence[Tuple[List[List[float]], List[str], List[float]]],
     ) -> Tuple[float, float, float, float, int]:
-        from PIL import Image  # type: ignore
-
         total_iou = 0.0
         total_class_sev = 0.0
         total_reasoning = 0.0
         total_confidence = 0.0
         n = 0
-        for image in golden:
-            with Image.open(image.image_path) as pil_img:
-                pil = pil_img.convert("RGB")
-            preds = model.predict(source=pil, verbose=False)
-            if not preds:
-                continue
-            pred_boxes, pred_classes, pred_confs = _extract_yolo_predictions(
-                preds[0], model.names
-            )
+        for image, (pred_boxes, pred_classes, pred_confs) in zip(golden, golden_preds):
             iou_avg, class_sev_avg, reasoning_avg, confidence_avg = _score_one_labeled_image(
                 gt_annotations=image.annotations,
                 pred_boxes=pred_boxes,
@@ -215,20 +262,14 @@ class ModelAccuracyEvaluator:
             n,
         )
 
-    def _score_against_benchmark(
-        self, model, benchmark: Sequence[BenchmarkImage]
+    def _score_against_benchmark_from_preds(
+        self,
+        benchmark: Sequence[BenchmarkImage],
+        bench_preds: Sequence[Tuple[List[List[float]], List[str], List[float]]],
     ) -> Tuple[float, int]:
-        from PIL import Image  # type: ignore
-
         total_iou = 0.0
         n = 0
-        for image in benchmark:
-            with Image.open(image.image_path) as pil_img:
-                pil = pil_img.convert("RGB")
-            preds = model.predict(source=pil, verbose=False)
-            if not preds:
-                continue
-            pred_boxes, _, _ = _extract_yolo_predictions(preds[0], model.names)
+        for image, (pred_boxes, _, _) in zip(benchmark, bench_preds):
             best_iou_per_gt = []
             for gt in image.annotations:
                 best = 0.0
@@ -243,6 +284,44 @@ class ModelAccuracyEvaluator:
         if n == 0:
             return 0.0, 0
         return total_iou / n, n
+
+
+def _download_url_to_file(url: str, target: Path) -> None:
+    req = Request(url, headers={"User-Agent": "hazard-validator-model-eval/1.0"})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with urlopen(req, timeout=600) as resp:
+        data = resp.read()
+    target.write_bytes(data)
+
+
+def _predictions_for_golden_inplace(model, golden: Sequence[GoldenImage]):
+    from PIL import Image  # type: ignore
+
+    out: list[Tuple[List[List[float]], List[str], List[float]]] = []
+    for image in golden:
+        with Image.open(image.image_path) as pil_img:
+            pil = pil_img.convert("RGB")
+        preds = model.predict(source=pil, verbose=False)
+        if not preds:
+            out.append(([], [], []))
+            continue
+        out.append(_extract_yolo_predictions(preds[0], model.names))
+    return out
+
+
+def _predictions_for_benchmark_inplace(model, benchmark: Sequence[BenchmarkImage]):
+    from PIL import Image  # type: ignore
+
+    out: list[Tuple[List[List[float]], List[str], List[float]]] = []
+    for image in benchmark:
+        with Image.open(image.image_path) as pil_img:
+            pil = pil_img.convert("RGB")
+        preds = model.predict(source=pil, verbose=False)
+        if not preds:
+            out.append(([], [], []))
+            continue
+        out.append(_extract_yolo_predictions(preds[0], model.names))
+    return out
 
 
 def _load_yolo(path: Path):
@@ -335,47 +414,3 @@ def _find_best_checkpoint(directory: Path) -> Optional[Path]:
         if candidate.name.lower() == "best.pt":
             return candidate
     return pt_files[0]
-
-
-def _download_best_pt_from_r2_prefix(
-    *,
-    bucket: str,
-    prefix: str,
-    creds: R2AccessCredentials,
-    target: Path,
-) -> Path:
-    try:
-        import boto3
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError("boto3 is required for R2 prefix downloads.") from exc
-
-    client = boto3.client(
-        "s3",
-        endpoint_url=creds.s3_endpoint,
-        aws_access_key_id=creds.access_key_id,
-        aws_secret_access_key=creds.secret_access_key,
-        region_name="auto",
-    )
-    continuation_token: Optional[str] = None
-    candidates: List[str] = []
-    while True:
-        kwargs = {"Bucket": bucket, "Prefix": prefix}
-        if continuation_token is not None:
-            kwargs["ContinuationToken"] = continuation_token
-        result = client.list_objects_v2(**kwargs)
-        for item in result.get("Contents", []):
-            key = item["Key"]
-            if key.lower().endswith(".pt"):
-                candidates.append(key)
-        if not result.get("IsTruncated"):
-            break
-        continuation_token = result.get("NextContinuationToken")
-
-    if not candidates:
-        raise FileNotFoundError(
-            f"No .pt files found under r2://{bucket}/{prefix}; cannot evaluate model."
-        )
-    chosen = next((k for k in candidates if k.lower().endswith("/best.pt")), candidates[0])
-    target.parent.mkdir(parents=True, exist_ok=True)
-    client.download_file(bucket, chosen, str(target))
-    return target

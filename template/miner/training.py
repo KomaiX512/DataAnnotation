@@ -15,6 +15,7 @@ import bittensor as bt
 from template.hazard.r2_storage import (
     delete_checkpoint_prefix_from_r2,
     load_r2_credentials_from_env,
+    presign_r2_object_uri,
     upload_checkpoint_to_r2,
 )
 from template.protocol import DatasetPointer, LabeledTrainingImage, ModelCheckpoint, TrainingManifest
@@ -131,7 +132,7 @@ class TrainingPipeline:
         recipe_path = train_root / "recipe.json"
         recipe_path.write_text(json.dumps(config_payload, indent=2, sort_keys=True), encoding="utf-8")
 
-        return TrainingManifest(
+        manifest = TrainingManifest(
             parent_model_hash=baseline.sha256,
             candidate_model_hash=artifact_hash,
             candidate_model_uri=remote_uri,
@@ -146,6 +147,9 @@ class TrainingPipeline:
                 "golden_samples": float(dataset_info["golden_samples"]),
                 "hpo_iterations": float(hpo_plan.get("iterations", 0)),
             },
+        )
+        return manifest.model_copy(
+            update={"candidate_model_uri": presign_r2_object_uri(creds=r2_creds, r2_uri=remote_uri)}
         )
 
     def run_from_labeled_images(
@@ -222,25 +226,26 @@ class TrainingPipeline:
         efficiency_score = min(1.0, max_training_seconds / training_seconds) if max_training_seconds > 0 else 0.0
         recipe_path = train_root / "recipe.json"
         recipe_path.write_text(json.dumps(config_payload, indent=2, sort_keys=True), encoding="utf-8")
-        return (
-            TrainingManifest(
-                parent_model_hash=baseline.sha256,
-                candidate_model_hash=artifact_hash,
-                candidate_model_uri=remote_uri,
-                config_hash=config_hash,
-                dataset_lineage_hash=dataset_info["dataset_hash"],
-                recipe_uri=recipe_path.as_uri(),
-                metrics={
-                    "reproducibility_score": 1.0,
-                    "uplift": float(dataset_info["train_samples"]) / max(1.0, float(dataset_info["val_samples"])),
-                    "efficiency": float(max(0.0, min(1.0, efficiency_score))),
-                    "train_samples": float(dataset_info["train_samples"]),
-                    "val_samples": float(dataset_info["val_samples"]),
-                    "hpo_iterations": float(hpo_plan.get("iterations", 0)),
-                },
-            ),
-            best_checkpoint,
+        manifest = TrainingManifest(
+            parent_model_hash=baseline.sha256,
+            candidate_model_hash=artifact_hash,
+            candidate_model_uri=remote_uri,
+            config_hash=config_hash,
+            dataset_lineage_hash=dataset_info["dataset_hash"],
+            recipe_uri=recipe_path.as_uri(),
+            metrics={
+                "reproducibility_score": 1.0,
+                "uplift": float(dataset_info["train_samples"]) / max(1.0, float(dataset_info["val_samples"])),
+                "efficiency": float(max(0.0, min(1.0, efficiency_score))),
+                "train_samples": float(dataset_info["train_samples"]),
+                "val_samples": float(dataset_info["val_samples"]),
+                "hpo_iterations": float(hpo_plan.get("iterations", 0)),
+            },
         )
+        manifest = manifest.model_copy(
+            update={"candidate_model_uri": presign_r2_object_uri(creds=r2_creds, r2_uri=remote_uri)}
+        )
+        return (manifest, best_checkpoint)
 
     def _prepare_dataset_from_labeled_urls(
         self,

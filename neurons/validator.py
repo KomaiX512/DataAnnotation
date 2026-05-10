@@ -19,6 +19,7 @@
 
 
 import json
+import os
 import time
 import random
 import hashlib
@@ -52,6 +53,7 @@ from template.hazard.golden_injection import GoldenInjector
 from template.hazard.image_corpus import ImageCorpus, ImageCorpusConfig
 from template.hazard.incentives import broad_softmax_scores
 from template.hazard.model_eval import ModelAccuracyComponents, ModelAccuracyEvaluator
+from template.hazard.submission_dedup import ModelHashClaimRegistry
 from template.hazard.r2_storage import load_r2_credentials_from_env
 from template.protocol import R2AccessCredentials
 from template.validator.dual_forward import dual_flywheel_forward
@@ -113,10 +115,16 @@ class Validator(BaseValidatorNeuron):
         self.consensus_scorer = ConsensusScorer()
         self.model_evaluator = ModelAccuracyEvaluator(
             download_root=Path(self.config.neuron.full_path) / "miner_checkpoints",
+            docker_sandbox_image=str(
+                getattr(self.config.neuron, "flywheel_model_eval_docker_image", "") or ""
+            ).strip(),
         )
         self.dataset_assembler = DatasetAssembler(
             corpus=self.image_corpus,
             storage_prefix=str(self.config.neuron.flywheel_commercial_dataset_prefix),
+        )
+        self.model_hash_registry = ModelHashClaimRegistry.load(
+            Path(self.config.neuron.full_path) / "flywheel_model_hash_registry.json"
         )
         self.reward_composer = DualFlywheelRewardComposer(
             alpha=float(self.config.neuron.flywheel_alpha_annotation),
@@ -208,9 +216,21 @@ class Validator(BaseValidatorNeuron):
         )
         try:
             endpoint = str(getattr(self.config.subtensor, "chain_endpoint", ""))
-            if endpoint.startswith("ws://127.0.0.1") or endpoint.startswith("ws://localhost"):
+            force_local = os.environ.get("FORCE_LOCAL_SET_WEIGHTS", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if (
+                not force_local
+                and (
+                    endpoint.startswith("ws://127.0.0.1")
+                    or endpoint.startswith("ws://localhost")
+                )
+            ):
                 bt.logging.warning(
-                    f"Skipping on-chain set_weights in local dev endpoint {endpoint} due commit API mismatch."
+                    f"Skipping on-chain set_weights in local dev endpoint {endpoint} due commit API mismatch. "
+                    "Set FORCE_LOCAL_SET_WEIGHTS=1 to attempt commits anyway."
                 )
                 return
             super().set_weights()
@@ -257,6 +277,9 @@ class Validator(BaseValidatorNeuron):
         ledger_path.write_text(
             json.dumps(self.dataset_assembler.ledger.to_jsonable(), indent=2, sort_keys=True),
             encoding="utf-8",
+        )
+        self.model_hash_registry.save(
+            Path(self.config.neuron.full_path) / "flywheel_model_hash_registry.json"
         )
 
     def load_state(self):

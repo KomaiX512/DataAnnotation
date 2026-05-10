@@ -203,11 +203,17 @@ def _validate_response_integrity(
         raise ValueError("Invalid config_hash format in submitted training manifest.")
     if not _looks_like_hex_digest(manifest.dataset_lineage_hash):
         raise ValueError("Invalid dataset_lineage_hash format in submitted training manifest.")
-    if not manifest.candidate_model_uri.startswith("r2://"):
-        raise ValueError("Submitted candidate_model_uri must use r2:// scheme.")
-    if "/miners/current/" not in manifest.candidate_model_uri:
+    uri = manifest.candidate_model_uri
+    if uri.startswith("r2://"):
+        if "/miners/current/" not in uri:
+            raise ValueError(
+                "Submitted candidate_model_uri must be namespaced under miners/current."
+            )
+    elif uri.startswith("https://") or uri.startswith("http://"):
+        pass
+    else:
         raise ValueError(
-            "Submitted candidate_model_uri must be namespaced under miners/current."
+            "Submitted candidate_model_uri must use r2://, https://, or http:// (presigned) scheme."
         )
     if not manifest.recipe_uri:
         raise ValueError("Submitted recipe_uri must be non-empty.")
