@@ -14,7 +14,7 @@ from template.hazard.golden_injection import InjectionPlan
 
 
 def test_reencode_produces_jpeg_without_crashing():
-    from template.miner.annotation_training import build_synthetic_labeled_png
+    from template.miner.annotation import build_synthetic_labeled_png
 
     raw = build_synthetic_labeled_png(32, 32)
     out = reencode_strip_metadata(raw, random.Random(0))
