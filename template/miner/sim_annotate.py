@@ -28,7 +28,6 @@ def random_annotations(
             PerImageAnnotationItem(
                 hazard_class="random_object",
                 bounding_box=[float(x1), float(y1), float(x2), float(y2)],
-                severity="none",
             )
         )
     return items
@@ -60,7 +59,6 @@ def perturb_annotations(
             PerImageAnnotationItem(
                 hazard_class=cls,
                 bounding_box=[float(nx1), float(ny1), float(nx2), float(ny2)],
-                severity=it.severity,
             )
         )
     if rng.random() < 0.12:
@@ -68,7 +66,6 @@ def perturb_annotations(
             PerImageAnnotationItem(
                 hazard_class="spurious_detection",
                 bounding_box=[5.0, 5.0, 25.0, 25.0],
-                severity="low",
             )
         )
     return out

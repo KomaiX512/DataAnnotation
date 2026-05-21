@@ -12,7 +12,7 @@ import bittensor as bt
 import numpy as np
 
 from template.base.validator import BaseValidatorNeuron
-from template.hazard.annotation_eval import AnnotationFidelityScorer, ConsensusScorer
+from template.hazard.annotation_eval import AnnotationFidelityScorer, ConsensusScorer, _ReliabilityAccumulator
 from template.hazard.dataset_assembler import AdoptionLedger, DatasetAssembler
 from template.hazard.dual_reward import DualFlywheelBreakdown, DualFlywheelRewardComposer
 from template.hazard.image_corpus import ImageCorpus, ImageCorpusConfig
@@ -34,6 +34,7 @@ class Validator(BaseValidatorNeuron):
             hallucination_penalty=float(self.config.neuron.flywheel_hallucination_penalty),
         )
         self.consensus_scorer = ConsensusScorer()
+        self.reliability = _ReliabilityAccumulator()
         self.dataset_assembler = DatasetAssembler(
             corpus=self.image_corpus,
             storage_prefix=str(self.config.neuron.flywheel_commercial_dataset_prefix),
@@ -141,6 +142,12 @@ class Validator(BaseValidatorNeuron):
                 json.dumps(self.dataset_assembler.ledger.to_jsonable(), indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+        if hasattr(self, "reliability"):
+            reliability_path = Path(self.config.neuron.full_path) / "reliability_state.json"
+            reliability_path.write_text(
+                json.dumps(self.reliability.to_jsonable(), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
 
     def load_state(self):
         bt.logging.info("Loading validator state.")
@@ -177,6 +184,16 @@ class Validator(BaseValidatorNeuron):
         if ledger_path.exists():
             payload = json.loads(ledger_path.read_text(encoding="utf-8"))
             self.dataset_assembler.ledger = AdoptionLedger.from_jsonable(payload)
+        reliability_path = Path(self.config.neuron.full_path) / "reliability_state.json"
+        if reliability_path.exists():
+            try:
+                payload = json.loads(reliability_path.read_text(encoding="utf-8"))
+                self.reliability = _ReliabilityAccumulator.from_jsonable(payload)
+            except Exception as exc:
+                bt.logging.warning(f"Failed to load reliability state: {exc}; starting fresh reliability.")
+                self.reliability = _ReliabilityAccumulator()
+        else:
+            self.reliability = _ReliabilityAccumulator()
 
     def _build_corpus_config(self) -> ImageCorpusConfig:
         golden_ratio = getattr(self.config.neuron, "flywheel_golden_ratio", None)

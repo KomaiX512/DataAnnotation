@@ -51,7 +51,6 @@ def load_coco_manifest_into_corpus(corpus: ImageCorpus, manifest_path: Path) -> 
                 hazard_class=str(a["hazard_class"]),
                 bounding_box=tuple(int(v) for v in a["bounding_box"]),
                 severity=str(a.get("severity") or "none"),
-                reasoning=str(a.get("reasoning") or ""),
             )
             for a in row.get("annotations") or []
         )

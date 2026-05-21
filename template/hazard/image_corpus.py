@@ -81,22 +81,6 @@ def _severity_for_label(label: str) -> SeverityTier:
     return "medium"
 
 
-def _reasoning_for_label(label: str, severity: SeverityTier) -> str:
-    """Generate a deterministic, human-readable reasoning sentence for the
-    Golden Set ground truth.
-
-    The reasoning is grounded in the hazard class and severity so cosine
-    similarity against miner-produced reasoning chains is meaningful.
-    """
-
-    base = re.sub(r"[_\-]+", " ", label).strip().lower() or "construction hazard"
-    return (
-        f"Observed {base} on a construction site. Severity={severity}. "
-        f"Worker safety is at risk without immediate corrective action and "
-        f"appropriate OSHA-compliant controls."
-    )
-
-
 @dataclass(frozen=True)
 class GoldenAnnotation:
     """One ground-truth instance for a Golden Set image."""
@@ -104,7 +88,6 @@ class GoldenAnnotation:
     hazard_class: str
     bounding_box: Tuple[int, int, int, int]  # pixel coords [x_min, y_min, x_max, y_max]
     severity: SeverityTier
-    reasoning: str
 
 
 @dataclass(frozen=True)
@@ -706,12 +689,10 @@ def _golden_annotations_from_payload(
 
     hazard_class = str(payload.get("category") or "hazard").strip().lower().replace(" ", "_")
     severity = _severity_for_label(hazard_class)
-    reasoning = _reasoning_for_label(hazard_class, severity)
     return GoldenAnnotation(
         hazard_class=hazard_class,
         bounding_box=(x_min, y_min, x_max, y_max),
         severity=severity,
-        reasoning=reasoning,
     )
 
 
@@ -720,7 +701,6 @@ def golden_annotation_to_jsonable(record: GoldenAnnotation) -> dict:
         "hazard_class": record.hazard_class,
         "bounding_box": list(record.bounding_box),
         "severity": record.severity,
-        "reasoning": record.reasoning,
     }
 
 

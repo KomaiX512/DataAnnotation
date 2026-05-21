@@ -19,16 +19,17 @@ import pytest
 from template.hazard.annotation_eval import PerMinerAnnotationScore
 from template.hazard.dataset_assembler import DatasetAssembler
 from template.protocol import PerImageAnnotationItem
-from tests.test_dual_flywheel import _build_synthetic_corpus, _miner_item
+from tests.test_dual_flywheel import _build_synthetic_corpus
 
 
 def _item(
     cls: str,
-    bbox: Tuple[int, int, int, int],
-    *,
-    severity: str = "high",
+    bbox: Tuple[float, float, float, float],
 ) -> PerImageAnnotationItem:
-    return _miner_item(cls=cls, bbox=bbox, severity=severity)
+    return PerImageAnnotationItem(
+        hazard_class=cls,
+        bounding_box=list(bbox),
+    )
 
 
 def _empty_scores(uids: List[int]) -> Dict[int, PerMinerAnnotationScore]:
@@ -44,7 +45,7 @@ def test_sybil_many_low_weight_miners_do_not_flip_consensus(tmp_path: Path):
     """Many Sybil miners with epsilon weight should not override two aligned reliable miners."""
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
-    box_a = (40, 40, 120, 120)
+    box_a = (40.0, 40.0, 120.0, 120.0)
     good = _item("missing_hardhat", box_a)
     bad_class_box = _item("trip_hazard", box_a)
 
@@ -79,7 +80,7 @@ def test_collusion_low_reliability_wrong_majority_escalates_or_wrong_not_accepte
     """Three colluding low-weight miners must not certify a false class when two reliable disagree."""
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
-    box = (30, 30, 100, 100)
+    box = (30.0, 30.0, 100.0, 100.0)
     uids = [10, 11, 20, 21, 22]
     annotations = {
         10: {pool.image_id: [_item("trip_hazard", box)]},
@@ -113,7 +114,7 @@ def test_minority_low_prior_class_expert_and_peer(tmp_path: Path):
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
     rare = "fall_protection"
-    box = (25, 25, 90, 90)
+    box = (25.0, 25.0, 90.0, 90.0)
     annotations = {
         0: {pool.image_id: [_item(rare, box)]},
         1: {pool.image_id: [_item(rare, box)]},
@@ -139,7 +140,7 @@ def test_minority_low_prior_class_expert_and_peer(tmp_path: Path):
 def test_only_one_miner_on_image_escalates(tmp_path: Path):
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
-    annotations = {0: {pool.image_id: [_item("trip_hazard", (10, 10, 50, 50))]}}
+    annotations = {0: {pool.image_id: [_item("trip_hazard", (10.0, 10.0, 50.0, 50.0))]}}
     scores = _empty_scores([0])
     _assign_weights(scores[0], {"trip_hazard": 0.9})
 
@@ -160,8 +161,8 @@ def test_two_miners_spatial_disagreement_escalates(tmp_path: Path):
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
     annotations = {
-        0: {pool.image_id: [_item("trip_hazard", (10, 10, 50, 50))]},
-        1: {pool.image_id: [_item("trip_hazard", (160, 160, 190, 190))]},
+        0: {pool.image_id: [_item("trip_hazard", (10.0, 10.0, 50.0, 50.0))]},
+        1: {pool.image_id: [_item("trip_hazard", (160.0, 160.0, 190.0, 190.0))]},
     }
     scores = _empty_scores([0, 1])
     _assign_weights(scores[0], {"trip_hazard": 0.9})
@@ -200,7 +201,7 @@ def test_uncertainty_calibration_band_on_synthetic_draws():
 def test_commercial_export_metadata_required_fields(tmp_path: Path):
     corpus = _build_synthetic_corpus(tmp_path)
     pool = corpus.annotation_images()[0]
-    vote = _item("missing_hardhat", (20, 20, 80, 80))
+    vote = _item("missing_hardhat", (20.0, 20.0, 80.0, 80.0))
     annotations = {0: {pool.image_id: [vote]}, 1: {pool.image_id: [vote]}}
     scores = _empty_scores([0, 1])
     _assign_weights(scores[0], {"missing_hardhat": 0.95})
@@ -253,8 +254,8 @@ def test_golden_fidelity_lane_reports_scores(tmp_path: Path):
     corpus = _build_synthetic_corpus(tmp_path)
     g1 = corpus.golden_images()[0]
     annotations = {
-        0: {g1.image_id: [_miner_item()]},
-        1: {g1.image_id: [_miner_item(cls="other", bbox=(150, 150, 170, 170))]},
+        0: {g1.image_id: [_item("missing_hardhat", (22.0, 32.0, 92.0, 132.0))]},
+        1: {g1.image_id: [_item("other", (150.0, 150.0, 170.0, 170.0))]},
     }
     scores = evaluate_round_annotations(
         corpus=corpus,

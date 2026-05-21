@@ -65,7 +65,7 @@ class AnnotationFidelityScorer:
     """
 
     iou_weight: float = 0.60
-    class_severity_weight: float = 0.40
+    class_weight: float = 0.40
     hallucination_penalty: float = 0.5
 
     def score(
@@ -89,7 +89,7 @@ class AnnotationFidelityScorer:
         # by IoU; track which miner items matched something.
         used_miner_idx: set[int] = set()
         per_match_iou: List[float] = []
-        per_match_class_sev: List[float] = []
+        per_match_class: List[float] = []
 
         for gt in gt_annotations:
             best_idx = -1
@@ -104,16 +104,16 @@ class AnnotationFidelityScorer:
             if best_idx < 0:
                 # Ground truth had no match -- counts as a miss (zero contribution).
                 per_match_iou.append(0.0)
-                per_match_class_sev.append(0.0)
+                per_match_class.append(0.0)
                 continue
             matched = miner_items[best_idx]
             used_miner_idx.add(best_idx)
             per_match_iou.append(best_iou)
-            per_match_class_sev.append(_class_severity_score(matched, gt))
+            per_match_class.append(_class_match_score(matched, gt))
 
         n_gt = max(1, len(gt_annotations))
         iou_avg = sum(per_match_iou) / n_gt
-        class_severity_avg = sum(per_match_class_sev) / n_gt
+        class_avg = sum(per_match_class) / n_gt
 
         hallucinated = max(0, len(miner_items) - len(used_miner_idx))
         # Each hallucination compresses score multiplicatively.
@@ -125,13 +125,13 @@ class AnnotationFidelityScorer:
 
         fidelity_raw = (
             self.iou_weight * iou_avg
-            + self.class_severity_weight * class_severity_avg
+            + self.class_weight * class_avg
         )
         fidelity = max(0.0, min(1.0, fidelity_raw * penalty))
 
         return FidelityComponents(
             iou=float(iou_avg),
-            class_severity=float(class_severity_avg),
+            class_severity=float(class_avg),
             fidelity=float(fidelity),
             hallucination_penalty=float(penalty),
             matched_count=len(used_miner_idx),
@@ -140,33 +140,12 @@ class AnnotationFidelityScorer:
         )
 
 
-def _class_severity_score(
+def _class_match_score(
     item: PerImageAnnotationItem, gt: GoldenAnnotation
 ) -> float:
     miner_class = (item.hazard_class or "").lower().strip()
     gt_class = (gt.hazard_class or "").lower().strip()
-    class_match = 1.0 if miner_class and miner_class == gt_class else 0.0
-    sev_w = _severity_match_weight(item.severity, gt.severity)
-    if class_match == 0.0 and sev_w == 0.0:
-        return 0.0
-    # Class match dominates (60%) but severity agreement contributes (40%).
-    return 0.6 * class_match + 0.4 * sev_w
-
-
-_SEV_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
-
-
-def _severity_match_weight(miner_sev: str, gt_sev: str) -> float:
-    """Harsher penalty when the miner under-asserts severity vs Golden (high→low)."""
-    m = str(miner_sev or "").strip().lower()
-    g = str(gt_sev or "").strip().lower()
-    if m == g:
-        return 1.0
-    mi = _SEV_ORDER.get(m, 2)
-    gi = _SEV_ORDER.get(g, 2)
-    if mi < gi:
-        return 0.15
-    return 0.45
+    return 1.0 if miner_class and miner_class == gt_class else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -323,13 +302,43 @@ class _ReliabilityAccumulator:
         self.iou_sum[uid] *= self.decay
         self.iou_count[uid] *= self.decay
 
+    def decay_all(self) -> None:
+        """Apply exponential decay once per round to all tracked UIDs."""
+        uids = set(self.tp.keys()) | set(self.fp.keys()) | set(self.fn.keys())
+        for uid in uids:
+            self._decay_uid(uid)
+
+    def to_jsonable(self) -> dict:
+        return {
+            "tp": {str(uid): dict(classes) for uid, classes in self.tp.items()},
+            "fp": {str(uid): dict(classes) for uid, classes in self.fp.items()},
+            "fn": {str(uid): dict(classes) for uid, classes in self.fn.items()},
+            "severity_ok": {str(uid): dict(classes) for uid, classes in self.severity_ok.items()},
+            "severity_total": {str(uid): dict(classes) for uid, classes in self.severity_total.items()},
+            "iou_sum": {str(uid): float(v) for uid, v in self.iou_sum.items()},
+            "iou_count": {str(uid): float(v) for uid, v in self.iou_count.items()},
+        }
+
+    @classmethod
+    def from_jsonable(cls, payload: dict) -> _ReliabilityAccumulator:
+        acc = cls()
+        for field_name in ("tp", "fp", "fn", "severity_ok", "severity_total"):
+            if field_name in payload:
+                for uid_str, classes in payload[field_name].items():
+                    for cls_name, val in classes.items():
+                        getattr(acc, field_name)[int(uid_str)][cls_name] = float(val)
+        for field_name in ("iou_sum", "iou_count"):
+            if field_name in payload:
+                for uid_str, val in payload[field_name].items():
+                    getattr(acc, field_name)[int(uid_str)] = float(val)
+        return acc
+
     def update(
         self,
         uid: int,
         miner_items: Sequence[PerImageAnnotationItem],
         golden: GoldenImage,
     ) -> None:
-        self._decay_uid(uid)
         used_miner_idx: set[int] = set()
         gt_annotations: Sequence[GoldenAnnotation] = golden.annotations
         for gt in gt_annotations:
@@ -355,12 +364,11 @@ class _ReliabilityAccumulator:
             self.iou_count[uid] += 1.0
             if pred_class == gt_class:
                 self.tp[uid][gt_class] += 1.0
+                self.severity_ok[uid][gt_class] += 1.0
             else:
                 self.fp[uid][pred_class] += 1.0
                 self.fn[uid][gt_class] += 1.0
             self.severity_total[uid][gt_class] += 1.0
-            if item.severity == gt.severity:
-                self.severity_ok[uid][gt_class] += 1.0
 
         for idx, item in enumerate(miner_items):
             if idx in used_miner_idx:
@@ -383,7 +391,7 @@ class _ReliabilityAccumulator:
             f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             sev_total = float(self.severity_total[uid].get(cls, 0.0))
             sev_acc = float(self.severity_ok[uid].get(cls, 0.0) / sev_total) if sev_total > 0 else 0.0
-            weight = max(self.epsilon, f1 * sev_acc)
+            weight = max(self.epsilon, f1)
             class_weights[cls] = float(weight)
             class_f1[cls] = float(f1)
             class_sev[cls] = float(sev_acc)
@@ -400,6 +408,7 @@ def evaluate_round_annotations(
     consensus_scorer: ConsensusScorer,
     hallucination_penalty: float,
     golden_missing_penalty: float = 0.0,
+    reliability: _ReliabilityAccumulator | None = None,
 ) -> Dict[int, PerMinerAnnotationScore]:
     """Compute per-miner fidelity + consensus scores for one round.
 
@@ -416,8 +425,12 @@ def evaluate_round_annotations(
                 continue
             per_image_peer_items.setdefault(image_id, {})[uid] = items
 
+    if reliability is None:
+        reliability = _ReliabilityAccumulator()
+    else:
+        reliability.decay_all()
+
     results: Dict[int, PerMinerAnnotationScore] = {}
-    reliability = _ReliabilityAccumulator()
     for uid, by_image in annotations_by_uid.items():
         score = PerMinerAnnotationScore(uid=uid)
         for image_id, items in by_image.items():

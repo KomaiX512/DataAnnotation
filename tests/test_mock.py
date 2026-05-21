@@ -2,16 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from template.hazard.vector_db import OshaVectorDatabase
 from template.mock import MockDendrite, MockWallet
 from template.protocol import AnnotationTask, UnlabeledAnnotationImage
-
-
-def test_osha_vector_database_returns_ranked_refs():
-    db = OshaVectorDatabase.default()
-    refs = db.search("fall protection harness edge risk", top_k=2)
-    assert len(refs) == 2
-    assert refs[0].citation_id.startswith("29CFR")
 
 
 @pytest.mark.asyncio
@@ -32,15 +24,11 @@ async def test_mock_dendrite_returns_annotation_task_response(monkeypatch, tmp_p
         "template.miner.annotation.upload_bytes_to_r2",
         lambda *a, **k: "r2://bucket/miners/annotations/task-1/annotations.json",
     )
-    monkeypatch.setattr(
-        "template.miner.annotation.annotate_image_two_stage",
-        lambda **kwargs: kwargs["vlm"],  # overwritten below
-    )
 
     from template.protocol import ImageAnnotationDocument, PerImageAnnotationItem
 
     monkeypatch.setattr(
-        "template.miner.annotation.annotate_image_two_stage",
+        "template.miner.detector_annotate.annotate_image_detector_only",
         lambda **kwargs: ImageAnnotationDocument(
             image_id=kwargs["image_id"],
             miner_uid=kwargs["miner_uid"],
@@ -48,8 +36,7 @@ async def test_mock_dendrite_returns_annotation_task_response(monkeypatch, tmp_p
             annotations=[
                 PerImageAnnotationItem(
                     hazard_class="missing_hardhat",
-                    bounding_box=[1, 2, 3, 4],
-                    severity="high",
+                    bounding_box=[1.0, 2.0, 3.0, 4.0],
                 )
             ],
             model_version=kwargs["model_version"],

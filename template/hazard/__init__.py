@@ -21,4 +21,3 @@ from .image_corpus import (
     UnlabeledImage,
 )
 from .r2_storage import load_r2_credentials_from_env
-from .vector_db import OshaReference, OshaVectorDatabase

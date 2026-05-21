@@ -126,8 +126,6 @@ def main() -> int:
                 {
                     "hazard_class": cls,
                     "bounding_box": box,
-                    "severity": "none",
-                    "reasoning": "",
                 }
             )
         is_golden = im_id in golden_ids

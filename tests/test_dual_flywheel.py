@@ -23,6 +23,7 @@ from template.hazard.annotation_eval import (
     ConsensusScorer,
     evaluate_round_annotations,
     iou_xyxy,
+    _ReliabilityAccumulator,
 )
 from template.hazard.dataset_assembler import (
     AggregatedObject,
@@ -96,7 +97,6 @@ def _build_synthetic_corpus(tmp_path: Path) -> ImageCorpus:
                 hazard_class="missing_hardhat",
                 bounding_box=(20, 30, 90, 130),
                 severity="high",
-                reasoning="Worker without hardhat near scaffold.",
             ),
         ),
     )
@@ -117,7 +117,6 @@ def _build_synthetic_corpus(tmp_path: Path) -> ImageCorpus:
                 hazard_class="fall_protection",
                 bounding_box=(10, 20, 60, 90),
                 severity="high",
-                reasoning="Unprotected edge with fall hazard.",
             ),
         ),
     )
@@ -155,7 +154,6 @@ def _build_synthetic_corpus(tmp_path: Path) -> ImageCorpus:
                     hazard_class="fall_protection",
                     bounding_box=(30, 40, 100, 150),
                     severity="high",
-                    reasoning="Fall hazard near edge.",
                 ),
             ),
             source_dataset="synthetic-benchmark",
@@ -214,12 +212,10 @@ def _miner_item(
     *,
     cls: str = "missing_hardhat",
     bbox=(22, 32, 92, 132),
-    severity: str = "high",
 ) -> PerImageAnnotationItem:
     return PerImageAnnotationItem(
         hazard_class=cls,
         bounding_box=list(bbox),
-        severity=severity,
     )
 
 
@@ -242,7 +238,6 @@ def test_fidelity_scorer_penalizes_hallucinations(tmp_path):
     halluc = _miner_item(
         cls="random_object",
         bbox=(140, 140, 180, 180),
-        severity="low",
     )
     components = scorer.score([_miner_item(), halluc], g1)
     assert components.hallucinated_count == 1
@@ -258,7 +253,6 @@ def test_fidelity_scorer_zeros_for_total_miss(tmp_path):
         _miner_item(
             cls="random_class",
             bbox=(150, 150, 175, 175),
-            severity="low",
         )
     ]
     components = scorer.score(items, g1)
@@ -578,3 +572,27 @@ def test_adoption_ledger_round_trips():
     assert restored.adoption_contributions == {1: 2.5, 2: 1.0}
     assert restored.last_round_contributions == {1: 0.8}
     assert restored.rounds_observed == 7
+
+
+# ---------------------------------------------------------------------------
+# Reliability accumulator serialization/decay
+# ---------------------------------------------------------------------------
+
+def test_reliability_accumulator_serialization_and_decay(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    g1 = corpus.golden_images()[0]
+    acc = _ReliabilityAccumulator(decay=0.9)
+    acc.update(1, [_miner_item()], g1)
+    acc.update(2, [_miner_item(cls="other", bbox=(150, 150, 170, 170))], g1)
+
+    # Verify serialization
+    data = acc.to_jsonable()
+    restored = _ReliabilityAccumulator.from_jsonable(data)
+    assert restored.tp[1]["missing_hardhat"] == 1.0
+    assert restored.fp[2]["other"] == 1.0
+
+    # Verify decay
+    restored.decay = 0.5
+    restored.decay_all()
+    assert restored.tp[1]["missing_hardhat"] == 0.5
+    assert restored.fp[2]["other"] == 0.5

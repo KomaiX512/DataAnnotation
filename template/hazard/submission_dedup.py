@@ -16,13 +16,12 @@ def fingerprint_annotation_items(items: Sequence[PerImageAnnotationItem]) -> str
     rows = []
     for it in sorted(
         items,
-        key=lambda x: (x.hazard_class.lower(), tuple(x.bounding_box), str(x.severity)),
+        key=lambda x: (x.hazard_class.lower(), tuple(x.bounding_box)),
     ):
         rows.append(
             {
                 "hazard_class": it.hazard_class.strip().lower(),
                 "bounding_box": [float(b) for b in it.bounding_box],
-                "severity": str(it.severity),
             }
         )
     payload = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")

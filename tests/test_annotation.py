@@ -30,11 +30,6 @@ def _minimal_miner_config(tmp_path: Path) -> MagicMock:
     m.annotation_backend = "yolo"
     m.dual_flywheel_r2_prefix = "miners/annotations"
     m.detector_checkpoint = str(detector)
-    m.vlm_openai_base_url = "http://127.0.0.1:1/v1"
-    m.vlm_openai_api_key = ""
-    m.vlm_openai_model = "stub-model"
-    m.vlm_request_timeout_s = 5.0
-    m.vlm_hf_model = ""
     return m
 
 
@@ -49,8 +44,7 @@ def test_annotations_file_payload_roundtrip():
                 annotations=[
                     PerImageAnnotationItem(
                         hazard_class="missing_fall_protection",
-                        bounding_box=[245, 130, 412, 389],
-                        severity="high",
+                        bounding_box=[245.0, 130.0, 412.0, 389.0],
                     )
                 ],
                 model_version="mv1" * 4,
@@ -72,13 +66,13 @@ def test_annotation_engine_rejects_deterministic_config(tmp_path: Path):
         AnnotationEngine(config=_Cfg())
 
 
-def test_annotation_engine_accepts_detector_only_backend(tmp_path: Path):
+def test_annotation_engine_accepts_yolo_backend(tmp_path: Path):
     class _Cfg:
         miner = _minimal_miner_config(tmp_path)
 
-    _Cfg.miner.annotation_backend = "yolo_det"
+    _Cfg.miner.annotation_backend = "yolo_medium"
     engine = AnnotationEngine(config=_Cfg())
-    assert engine.annotation_backend == "yolo_det"
+    assert engine.annotation_backend == "yolo_medium"
     assert engine.detector_checkpoint is not None
 
 
@@ -101,7 +95,7 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
 
     png = build_synthetic_labeled_png(64, 64)
 
-    def fake_annotate_two_stage(**kwargs):
+    def fake_annotate_detector_only(**kwargs):
         from datetime import datetime, timezone
 
         return ImageAnnotationDocument(
@@ -111,16 +105,15 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
             annotations=[
                 PerImageAnnotationItem(
                     hazard_class="missing_hardhat",
-                    bounding_box=[1, 1, 20, 20],
-                    severity="high",
+                    bounding_box=[1.0, 1.0, 20.0, 20.0],
                 )
             ],
             model_version=kwargs["model_version"],
         )
 
     monkeypatch.setattr(
-        "template.miner.annotation.annotate_image_two_stage",
-        fake_annotate_two_stage,
+        "template.miner.detector_annotate.annotate_image_detector_only",
+        fake_annotate_detector_only,
     )
 
     class _Cfg:

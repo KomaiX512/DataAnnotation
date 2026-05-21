@@ -30,7 +30,6 @@ def _write_mock_annotations_file(task_id: str, image_ids: list[str]) -> str:
                     PerImageAnnotationItem(
                         hazard_class="missing_hardhat",
                         bounding_box=[10, 10, 40, 40],
-                        severity="medium",
                     )
                 ],
                 model_version="mock" * 8,

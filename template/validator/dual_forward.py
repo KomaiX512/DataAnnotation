@@ -299,6 +299,7 @@ async def _dual_flywheel_forward_impl(
         consensus_scorer=consensus_scorer,
         hallucination_penalty=composer.hallucination_penalty_per_event,
         golden_missing_penalty=composer.golden_missing_penalty,
+        reliability=getattr(self, "reliability", None),
     )
 
     winners = assembler.assemble(

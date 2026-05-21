@@ -500,7 +500,8 @@ class DatasetAssembler:
                 box = None
             else:
                 observed_class = _safe_class(item.hazard_class)
-                observed_severity = (item.severity or "none")
+                from template.hazard.image_corpus import _severity_for_label
+                observed_severity = _severity_for_label(observed_class)
                 box = tuple(float(v) for v in item.bounding_box)
             cls_weight = score.weight_for_class(observed_class) if score is not None else 1e-4
             obs_conf = float(cls_weight)
@@ -522,20 +523,18 @@ class DatasetAssembler:
         class_post = _softmax_dict(log_probs)
         accepted_class, conf = max(class_post.items(), key=lambda kv: kv[1])
 
-        sev_scores = {sev: 0.0 for sev in severity_labels}
-        for vote in per_miner_votes:
-            sev_weight = vote.reliability_weight_at_aggregation
-            for sev in severity_labels:
-                sev_scores[sev] += sev_weight * (1.0 if sev == vote.severity_voted else 0.05)
-        sev_post = _normalize_dict(sev_scores)
-        accepted_sev, sev_conf = max(sev_post.items(), key=lambda kv: kv[1])
+        if accepted_class is not None and accepted_class != _BACKGROUND_CLASS:
+            from template.hazard.image_corpus import _severity_for_label
+            accepted_sev = _severity_for_label(accepted_class)
+        else:
+            accepted_sev = "none"
+        sev_post = {sev: (1.0 if sev == accepted_sev else 0.0) for sev in severity_labels}
+        sev_conf = 1.0
 
         fused_box, mean_iou_to_median, _box_count = self._fuse_box(per_miner_votes)
         escalation_reason = None
         if conf < _DEFAULT_ACCEPT_CONFIDENCE:
             escalation_reason = "low_class_confidence"
-        elif sev_conf < _DEFAULT_ACCEPT_SEVERITY_CONFIDENCE:
-            escalation_reason = "low_severity_confidence"
         elif len(all_miner_ids) < _DEFAULT_MIN_VOTERS:
             escalation_reason = "insufficient_miners_on_image"
         elif mean_iou_to_median < _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN:

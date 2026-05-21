@@ -16,7 +16,6 @@ class UnlabeledAnnotationImage(BaseModel):
 class PerImageAnnotationItem(BaseModel):
     hazard_class: str = Field(..., min_length=1)
     bounding_box: List[float] = Field(..., min_length=4, max_length=4)
-    severity: SeverityTier
 
 
 class ImageAnnotationDocument(BaseModel):

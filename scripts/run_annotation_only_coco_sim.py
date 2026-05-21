@@ -80,12 +80,13 @@ def _load_coco_subset(
         anns: list[GoldenAnnotation] = []
         for ann in anns_by_image[im.image_id]:
             x, y, w, h = [float(v) for v in ann["bbox"]]
+            from template.hazard.image_corpus import _severity_for_label
+            cls = categories[int(ann["category_id"])]
             anns.append(
                 GoldenAnnotation(
-                    hazard_class=categories[int(ann["category_id"])],
+                    hazard_class=cls,
                     bounding_box=(int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))),
-                    severity="none",
-                    reasoning="",
+                    severity=_severity_for_label(cls),
                 )
             )
         gt_by_hash[image_hash] = anns
@@ -114,11 +115,10 @@ def _load_coco_subset(
     return corpus, gt_by_hash
 
 
-def _anno(cls: str, bbox: Sequence[float], severity: str = "none") -> PerImageAnnotationItem:
+def _anno(cls: str, bbox: Sequence[float]) -> PerImageAnnotationItem:
     return PerImageAnnotationItem(
         hazard_class=cls,
         bounding_box=[float(v) for v in bbox],
-        severity=severity,
     )
 
 
@@ -152,7 +152,7 @@ def _simulate_miner_annotations(
                 cls = a.hazard_class if rng.random() < 0.8 else gt[0].hazard_class
                 items.append(_anno(cls, noisy))
             if rng.random() < 0.15:
-                items.append(_anno("random_object", [5, 5, 25, 25]))
+                items.append(_anno("random_object", [5.0, 5.0, 25.0, 25.0]))
         elif quality == "random":
             items = []
             for _ in range(max(1, len(gt))):
@@ -160,7 +160,7 @@ def _simulate_miner_annotations(
                 y1 = rng.randint(0, max(1, height // 2))
                 x2 = x1 + rng.randint(10, max(11, width // 3))
                 y2 = y1 + rng.randint(10, max(11, height // 3))
-                items.append(_anno("random_object", [x1, y1, x2, y2]))
+                items.append(_anno("random_object", [float(x1), float(y1), float(x2), float(y2)]))
         else:
             raise ValueError(f"Unknown quality {quality!r}")
         out[image_id] = items

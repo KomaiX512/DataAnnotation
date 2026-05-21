@@ -63,7 +63,6 @@ def test_build_camouflaged_annotation_images_opaque_names(tmp_path):
                     hazard_class="x",
                     bounding_box=(0, 0, 1, 1),
                     severity="low",
-                    reasoning="r",
                 ),
             ),
         )

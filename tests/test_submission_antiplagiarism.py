@@ -12,7 +12,6 @@ def _item(**kwargs):
     base = dict(
         hazard_class="missing_hardhat",
         bounding_box=[1, 2, 30, 40],
-        severity="high",
     )
     base.update(kwargs)
     return PerImageAnnotationItem(**base)

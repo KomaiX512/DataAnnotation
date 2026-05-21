@@ -166,10 +166,9 @@ def add_miner_args(cls, parser):
     parser.add_argument(
         "--miner.annotation_backend",
         type=str,
-        choices=["yolo", "yolo_medium", "yolo_det", "yolo_det_medium", "random"],
+        choices=["yolo", "yolo_medium", "random"],
         help=(
-            "Annotation backend: yolo (YOLO+VLM), yolo_medium (YOLO+VLM + box noise), "
-            "yolo_det / yolo_det_medium (YOLO-only, for COCO localnet without VLM), "
+            "Annotation backend: yolo (YOLO-only detection), yolo_medium (YOLO-only + box noise), "
             "random (deliberately poor boxes for acceptance tests)."
         ),
         default="yolo",
@@ -188,67 +187,10 @@ def add_miner_args(cls, parser):
     )
 
     parser.add_argument(
-        "--miner.vlm_hf_model",
-        type=str,
-        help=(
-            "Hugging Face model id (or local path) for in-process Qwen2-VL Stage-2 VLM. "
-            "When set, overrides HTTP OpenAI-compatible mode. Example: Qwen/Qwen2-VL-2B-Instruct. "
-            "Requires: pip install 'transformers>=4.46' accelerate qwen-vl-utils"
-        ),
-        default="",
-    )
-    parser.add_argument(
-        "--miner.vlm_hf_device",
-        type=str,
-        help="Device for HF VLM: auto (default), cuda, cpu, or mps.",
-        default="",
-    )
-    parser.add_argument(
-        "--miner.vlm_hf_dtype",
-        type=str,
-        help="Weight dtype for HF VLM: auto, float32, float16, bfloat16.",
-        default="auto",
-    )
-    parser.add_argument(
-        "--miner.vlm_hf_max_new_tokens",
-        type=int,
-        help="Max new tokens per VLM generation (HF path only).",
-        default=384,
-    )
-
-    parser.add_argument(
-        "--miner.vlm_openai_base_url",
-        type=str,
-        help=(
-            "OpenAI-compatible API base URL for the Stage-2 VLM (e.g. http://127.0.0.1:1234/v1). "
-            "Ignored when --miner.vlm_hf_model is set."
-        ),
-        default="",
-    )
-    parser.add_argument(
-        "--miner.vlm_openai_api_key",
-        type=str,
-        help="Optional API key for the VLM HTTP endpoint.",
-        default="",
-    )
-    parser.add_argument(
-        "--miner.vlm_openai_model",
-        type=str,
-        help="VLM model id passed to the OpenAI-compatible chat/completions API.",
-        default="Qwen/Qwen2-VL-2B-Instruct",
-    )
-    parser.add_argument(
         "--miner.detector_checkpoint",
         type=str,
         help="Local YOLO weights path used for Stage-1 detection in the annotation pipeline.",
         default="yolov8s.pt",
-    )
-
-    parser.add_argument(
-        "--miner.vlm_request_timeout_s",
-        type=float,
-        help="HTTP timeout seconds for each VLM request.",
-        default=120.0,
     )
 
     parser.add_argument(

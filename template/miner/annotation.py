@@ -23,11 +23,6 @@ from template.protocol import (
     ImageAnnotationDocument,
 )
 from template.miner.sim_annotate import perturb_annotations, random_annotations
-from template.miner.two_stage_annotate import (
-    annotate_image_detector_only,
-    annotate_image_two_stage,
-)
-from template.miner.vlm_client import build_vlm_client
 
 
 def fetch_url_bytes(url: str, *, timeout: float = 120.0) -> bytes:
@@ -52,8 +47,8 @@ def build_synthetic_labeled_png(width: int = 64, height: int = 64) -> bytes:
 
 class AnnotationEngine:
     """
-    Annotation-only miner: receive unlabeled image URLs, run the two-stage
-    YOLO + VLM pipeline locally, upload ``annotations.json`` to R2.
+    Annotation-only miner: receive unlabeled image URLs, run YOLO
+    detector locally, upload ``annotations.json`` to R2.
     """
 
     def __init__(self, config=None):
@@ -68,7 +63,7 @@ class AnnotationEngine:
         if raw_backend.lower() == "deterministic":
             raise ValueError(
                 "miner.annotation_backend='deterministic' is removed. "
-                "Use 'yolo' (YOLO + VLM two-stage pipeline)."
+                "Use 'yolo' (YOLO-only detector pipeline)."
             )
         self.annotation_backend = raw_backend.lower() if raw_backend else "yolo"
         self.r2_prefix = str(
@@ -78,8 +73,7 @@ class AnnotationEngine:
         self._sim_noise_px = int(getattr(miner_cfg, "sim_noise_px", 8))
 
         self.detector_checkpoint: Path | None = None
-        self._vlm = None
-        if self.annotation_backend in ("yolo", "yolo_medium", "yolo_det", "yolo_det_medium"):
+        if self.annotation_backend in ("yolo", "yolo_medium"):
             detector = str(
                 getattr(miner_cfg, "detector_checkpoint", "")
                 or "yolov8s.pt"
@@ -90,8 +84,6 @@ class AnnotationEngine:
                     f"Detector checkpoint not found: {self.detector_checkpoint}. "
                     "Set --miner.detector_checkpoint to a local YOLO weights file."
                 )
-            if self.annotation_backend in ("yolo", "yolo_medium"):
-                self._vlm = build_vlm_client(config)
 
         self._fetch_image: Callable[[str], bytes] = fetch_url_bytes
         self.model_version = self._compute_model_version(miner_cfg)
@@ -100,9 +92,6 @@ class AnnotationEngine:
     def _compute_model_version(miner_cfg: object) -> str:
         parts = [
             str(getattr(miner_cfg, "annotation_backend", "yolo")),
-            str(getattr(miner_cfg, "vlm_hf_model", "") or ""),
-            str(getattr(miner_cfg, "vlm_openai_model", "") or ""),
-            str(getattr(miner_cfg, "vlm_openai_base_url", "") or ""),
             str(getattr(miner_cfg, "detector_checkpoint", "") or ""),
         ]
         digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -139,37 +128,16 @@ class AnnotationEngine:
                         timestamp=ts,
                         annotations=items,
                     )
-                elif self.annotation_backend in ("yolo_det", "yolo_det_medium"):
+                elif self.annotation_backend in ("yolo", "yolo_medium"):
                     assert self.detector_checkpoint is not None
+                    from template.miner.detector_annotate import annotate_image_detector_only
+
                     doc = annotate_image_detector_only(
                         checkpoint=self.detector_checkpoint,
                         image_bytes=img_bytes,
                         image_id=spec.image_id,
                         model_version=self.model_version,
                         miner_uid=miner_hotkey,
-                    )
-                    if self.annotation_backend == "yolo_det_medium":
-                        from PIL import Image
-                        import io
-
-                        with Image.open(io.BytesIO(img_bytes)) as pil:
-                            w, h = pil.size
-                        doc.annotations = perturb_annotations(
-                            doc.annotations,
-                            width=w,
-                            height=h,
-                            rng=rng,
-                            noise_px=self._sim_noise_px,
-                        )
-                elif self.annotation_backend in ("yolo", "yolo_medium"):
-                    assert self.detector_checkpoint is not None
-                    doc = annotate_image_two_stage(
-                        checkpoint=self.detector_checkpoint,
-                        image_bytes=img_bytes,
-                        image_id=spec.image_id,
-                        model_version=self.model_version,
-                        miner_uid=miner_hotkey,
-                        vlm=self._vlm,
                     )
                     if self.annotation_backend == "yolo_medium":
                         from PIL import Image
@@ -187,7 +155,7 @@ class AnnotationEngine:
                 else:
                     raise ValueError(
                         f"Unknown annotation_backend: {self.annotation_backend!r}; "
-                        "use yolo, yolo_medium, yolo_det, yolo_det_medium, or random."
+                        "use yolo, yolo_medium, or random."
                     )
                 records.append(doc)
 
