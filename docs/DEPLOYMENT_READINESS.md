@@ -1,32 +1,42 @@
 # Subnet Deployment Readiness Gates
 
-This project uses a strict one-path flow (real training + R2 + golden evaluation).  
+This project uses a strict one-path flow (annotation upload + Golden Set scoring + commercial dataset assembly).  
 Use this checklist to promote from localnet to testnet.
 
 ## Phase 1: Core loop sanity (localnet)
 
 ```bash
-export MINER_MAX_TRAIN_SAMPLES=16 MINER_MAX_VAL_SAMPLES=8 MINER_MAX_EPOCHS=1 GOLDEN_MAX_SAMPLES=8
-export ENABLE_AUTORESEARCH=0 MAX_TRAINING_SECONDS=300 TRAINING_TIMEOUT=900 RUN_SECONDS=1800
+export GOLDEN_MAX_SAMPLES=8 RUN_SECONDS=1800
 ./scripts/run_localnet_e2e_real.sh
 ```
 
 Pass criteria:
-- `event=evaluator_golden_score_payload` appears.
-- `event=artifact_verification ... task_type=training ... passed=True` appears.
+- `event=annotation_flywheel_round_start` appears.
+- `event=annotation_flywheel_round_done ...` appears with non-zero rewards for responsive miners.
 - No `Error during validation step`.
 
 ## Phase 2: Multi-miner + adversarial stress (localnet)
 
 ```bash
-export RUN_SECONDS=1800 ADVERSARIAL_MINER_INDEX=2 ADVERSARIAL_MODE=malformed_manifest
+export RUN_SECONDS=1800
 ./scripts/run_localnet_stress_matrix.sh
 ```
 
 Pass criteria:
 - Validator remains alive (`step(...)` continues).
-- Adversarial responses are rejected by integrity checks.
-- Honest miners still receive non-zero training verification.
+- Duplicate or malformed annotation payloads are rejected by integrity checks.
+- Honest miners still receive non-zero annotation quality scores.
+
+## Phase 2b: Probabilistic aggregation production readiness (≥10 miners)
+
+See **`docs/PRODUCTION_READINESS_LOCALNET.md`** for the seven acceptance tests, golden-holdout and calibration evaluators, and commercial JSONL schema validation.
+
+```bash
+export RUN_SECONDS=3600 MIN_MINERS=10
+./scripts/run_production_readiness_localnet.sh
+```
+
+Optional: set `GOLDEN_MANIFEST`, `COMMERCIAL_JSONL`, and `EXTRA_LABELS` (pool ground truth) for holdout and calibration gates.
 
 ## Phase 3: Testnet weight-setting validation
 
