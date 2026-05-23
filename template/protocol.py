@@ -18,6 +18,18 @@ class PerImageAnnotationItem(BaseModel):
     bounding_box: List[float] = Field(..., min_length=4, max_length=4)
 
 
+class LabeledTrainingImage(BaseModel):
+    """A labeled image from the validator's public Training Pool.
+
+    Miners may use these for fine-tuning.  The Training Pool is separate
+    from the hidden Golden Set and is shared openly with every miner.
+    """
+
+    image_url: str = Field(..., min_length=1)
+    image_id: str = Field(..., min_length=1)
+    annotations: List[PerImageAnnotationItem] = Field(default_factory=list)
+
+
 class ImageAnnotationDocument(BaseModel):
     image_id: str
     miner_uid: str
@@ -47,6 +59,8 @@ class AnnotationTask(bt.Synapse):
     task_id: str = Field("")
     challenge_nonce: str = Field("")
     annotation_images: List[UnlabeledAnnotationImage] = Field(default_factory=list)
+    training_pool: List[LabeledTrainingImage] = Field(default_factory=list)
+    training_pool_hash: str = Field("")
     annotations_uri: str = Field("")
     miner_r2_credentials: Optional[R2AccessCredentials] = Field(None)
     duration_ms: Optional[int] = Field(None, ge=0)

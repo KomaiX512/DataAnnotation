@@ -163,12 +163,13 @@ def add_miner_args(cls, parser):
         default=str(Path.cwd() / "artifacts" / "miner_annotation"),
     )
 
+    # --- Legacy annotation backend (preserved for backward compatibility) ---
     parser.add_argument(
         "--miner.annotation_backend",
         type=str,
         choices=["yolo", "yolo_medium", "random"],
         help=(
-            "Annotation backend: yolo (YOLO-only detection), yolo_medium (YOLO-only + box noise), "
+            "Legacy annotation backend: yolo (YOLO-only detection), yolo_medium (YOLO-only + box noise), "
             "random (deliberately poor boxes for acceptance tests)."
         ),
         default="yolo",
@@ -200,6 +201,162 @@ def add_miner_args(cls, parser):
         default="miners/annotations",
     )
 
+    # ===================================================================
+    # Multi-backend training & inference arguments
+    # ===================================================================
+
+    parser.add_argument(
+        "--miner.model_backend",
+        type=str,
+        choices=["yolo_local", "self_hosted", "openai_vision"],
+        help=(
+            "Model backend for training and inference: yolo_local (Ultralytics YOLO on GPU), "
+            "self_hosted (external REST API), openai_vision (OpenAI fine-tuning)."
+        ),
+        default="",
+    )
+
+    # --- Dataset splitting ---
+    parser.add_argument(
+        "--miner.split_seed",
+        type=int,
+        help="Seed for deterministic hash-based dataset splitting.",
+        default=42,
+    )
+    parser.add_argument(
+        "--miner.train_split_pct",
+        type=int,
+        help="Percentage of images allocated to the training split (0-100).",
+        default=70,
+    )
+
+    # --- Class taxonomy ---
+    parser.add_argument(
+        "--miner.class_taxonomy_path",
+        type=str,
+        help="Path to JSON list of valid hazard class strings.",
+        default="",
+    )
+
+    # --- Training control ---
+    parser.add_argument(
+        "--miner.skip_training",
+        action="store_true",
+        help="Skip fine-tuning entirely; run inference with base/pretrained model.",
+        default=False,
+    )
+    parser.add_argument(
+        "--miner.force_retrain",
+        action="store_true",
+        help="Force retraining even if a cached model exists.",
+        default=False,
+    )
+    parser.add_argument(
+        "--miner.model_cache_dir",
+        type=str,
+        help="Directory for cached fine-tuned model checkpoints.",
+        default="",
+    )
+
+    # --- YOLO local backend ---
+    parser.add_argument(
+        "--miner.yolo_pretrained_weights",
+        type=str,
+        help="Path to pretrained YOLO weights for yolo_local backend.",
+        default="yolov8s.pt",
+    )
+    parser.add_argument("--miner.yolo_epochs", type=int, help="YOLO training epochs.", default=50)
+    parser.add_argument("--miner.yolo_imgsz", type=int, help="YOLO image size.", default=640)
+    parser.add_argument("--miner.yolo_batch", type=int, help="YOLO batch size.", default=16)
+    parser.add_argument("--miner.yolo_lr0", type=float, help="YOLO initial learning rate.", default=0.01)
+    parser.add_argument("--miner.yolo_lrf", type=float, help="YOLO final LR factor.", default=0.01)
+    parser.add_argument("--miner.yolo_momentum", type=float, help="YOLO SGD momentum.", default=0.937)
+    parser.add_argument("--miner.yolo_weight_decay", type=float, help="YOLO weight decay.", default=0.0005)
+    parser.add_argument("--miner.yolo_warmup_epochs", type=float, help="YOLO warmup epochs.", default=3.0)
+    parser.add_argument("--miner.yolo_optimizer", type=str, help="YOLO optimizer (auto, SGD, Adam, AdamW).", default="auto")
+    parser.add_argument("--miner.yolo_augment", action="store_true", help="Enable YOLO augmentation.", default=True)
+    parser.add_argument(
+        "--miner.yolo_pseudo_label_conf",
+        type=float,
+        help="Confidence threshold for YOLO pseudo-labeling on unlabeled images.",
+        default=0.5,
+    )
+    parser.add_argument(
+        "--miner.seed_labels_path",
+        type=str,
+        help="Path to a directory or JSON file with seed labels for YOLO training.",
+        default="",
+    )
+
+    # --- Self-hosted backend ---
+    parser.add_argument(
+        "--miner.self_hosted_train_url",
+        type=str,
+        help="URL for the self-hosted /train endpoint.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.self_hosted_infer_url",
+        type=str,
+        help="URL for the self-hosted /infer endpoint.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.self_hosted_api_key",
+        type=str,
+        help="Bearer token for self-hosted API authentication.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.self_hosted_poll_interval_seconds",
+        type=int,
+        help="Seconds between polls when waiting for self-hosted training to complete.",
+        default=30,
+    )
+
+    # --- OpenAI Vision backend ---
+    parser.add_argument(
+        "--miner.openai_api_key",
+        type=str,
+        help="OpenAI API key for the openai_vision backend.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.openai_base_model",
+        type=str,
+        help="OpenAI base model ID for fine-tuning.",
+        default="gpt-4o-2024-08-06",
+    )
+    parser.add_argument("--miner.openai_n_epochs", type=int, help="OpenAI fine-tuning epochs.", default=3)
+    parser.add_argument("--miner.openai_batch_size", type=int, help="OpenAI fine-tuning batch size.", default=1)
+    parser.add_argument(
+        "--miner.openai_learning_rate_multiplier",
+        type=float,
+        help="OpenAI fine-tuning learning rate multiplier.",
+        default=1.8,
+    )
+
+    # --- Auto-research ---
+    parser.add_argument(
+        "--miner.enable_autoresearch",
+        action="store_true",
+        help="Enable Karpathy-style auto-research hyperparameter search loop.",
+        default=False,
+    )
+    parser.add_argument(
+        "--miner.autoresearch_config_path",
+        type=str,
+        help="Path to YAML/JSON file defining the hyperparameter search space.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.autoresearch_max_trials",
+        type=int,
+        help="Max number of trial configurations (0 = full Cartesian product).",
+        default=0,
+    )
+
+    # --- W&B ---
     parser.add_argument(
         "--wandb.project_name",
         type=str,
@@ -403,6 +560,24 @@ def add_validator_args(cls, parser):
             "images when building full-dataset miner requests; homogenizes per-image latency."
         ),
         default=40,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_annotation_request_size",
+        type=int,
+        help=(
+            "Number of images to include in each miner annotation request. "
+            "Use 0 to send the full corpus for the round."
+        ),
+        default=0,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_golden_injection_per_request",
+        type=int,
+        help=(
+            "How many of the request images come from the hidden Golden Set. "
+            "Ignored when flywheel_annotation_request_size is 0."
+        ),
+        default=0,
     )
     parser.add_argument(
         "--neuron.flywheel_alpha_annotation",

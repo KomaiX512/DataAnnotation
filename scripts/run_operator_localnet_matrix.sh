@@ -241,6 +241,8 @@ VALIDATOR_CMD=(
 [[ -n "${FLYWHEEL_IMAGE_CACHE_ROOT:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_image_cache_root "$FLYWHEEL_IMAGE_CACHE_ROOT")
 [[ -n "${FLYWHEEL_GOLDEN_MISSING_PENALTY:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_golden_missing_penalty "$FLYWHEEL_GOLDEN_MISSING_PENALTY")
 [[ -n "${FLYWHEEL_COMMERCIAL_EXPORT_EVERY:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_commercial_export_every "$FLYWHEEL_COMMERCIAL_EXPORT_EVERY")
+[[ -n "${FLYWHEEL_ANNOTATION_REQUEST_SIZE:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_annotation_request_size "$FLYWHEEL_ANNOTATION_REQUEST_SIZE")
+[[ -n "${FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_golden_injection_per_request "$FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST")
 [[ -n "${NEURON_ANNOTATION_TIMEOUT:-}" ]] && VALIDATOR_CMD+=(--neuron.annotation_timeout "$NEURON_ANNOTATION_TIMEOUT")
 "${VALIDATOR_CMD[@]}" >"$vlog" 2>&1 &
 PIDS+=("$!")

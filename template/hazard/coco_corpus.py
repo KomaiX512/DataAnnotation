@@ -33,9 +33,13 @@ def load_coco_manifest_into_corpus(corpus: ImageCorpus, manifest_path: Path) -> 
 
     corpus._golden.clear()
     corpus._annotation.clear()
+    corpus._training_pool.clear()
     corpus._benchmark.clear()
     corpus._golden_index.clear()
     corpus._all_image_index.clear()
+
+    # Collect non-golden images with their annotations for training pool selection
+    pool_candidates = []
 
     for row in images:
         image_id = str(row["image_id"])
@@ -78,10 +82,32 @@ def load_coco_manifest_into_corpus(corpus: ImageCorpus, manifest_path: Path) -> 
                     source_dataset="coco_val2017",
                 )
             )
+            # Candidate for training pool (if it has annotations)
+            if anns:
+                pool_candidates.append(
+                    GoldenImage(
+                        image_id=image_id,
+                        image_path=image_path,
+                        image_url=url,
+                        width=width,
+                        height=height,
+                        annotations=anns,
+                    )
+                )
+
+    # Deterministic selection of training pool from annotation pool candidates
+    tp_ratio = getattr(corpus.config, "training_pool_ratio", 0.15)
+    tp_max = getattr(corpus.config, "training_pool_max", 30)
+    for candidate in pool_candidates:
+        # Deterministic hash-based selection
+        h = hashlib.sha256(f"training_pool:{candidate.image_id}".encode()).hexdigest()
+        bucket = int(h[:8], 16) / 0xFFFFFFFF
+        if bucket < tp_ratio and len(corpus._training_pool) < tp_max:
+            corpus._training_pool.append(candidate)
 
     bt.logging.info(
-        "event=coco_manifest_loaded path=%s golden=%d pool=%d"
-        % (path, len(corpus._golden), len(corpus._annotation))
+        "event=coco_manifest_loaded path=%s golden=%d pool=%d training_pool=%d"
+        % (path, len(corpus._golden), len(corpus._annotation), len(corpus._training_pool))
     )
 
 

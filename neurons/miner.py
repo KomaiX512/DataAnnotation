@@ -30,11 +30,28 @@ from template.base.miner import BaseMinerNeuron
 
 
 class Miner(BaseMinerNeuron):
-    """Annotation-only miner: annotate unlabeled images and upload to R2."""
+    """Annotation miner: supports legacy single-pass and multi-backend training modes."""
 
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
-        self.annotation_engine = AnnotationEngine(config=self.config)
+
+        # Select engine based on --miner.model_backend
+        backend = str(
+            getattr(getattr(self.config, "miner", object()), "model_backend", "") or ""
+        ).strip()
+
+        if backend in ("yolo_local", "self_hosted", "openai_vision"):
+            from template.miner.training_engine import ModelTrainingAnnotationEngine
+
+            self.annotation_engine = ModelTrainingAnnotationEngine(config=self.config)
+            bt.logging.info(
+                f"Miner using ModelTrainingAnnotationEngine with backend={backend}"
+            )
+        else:
+            # Legacy path — original AnnotationEngine
+            self.annotation_engine = AnnotationEngine(config=self.config)
+            bt.logging.info("Miner using legacy AnnotationEngine")
+
         self.axon.attach(
             forward_fn=self.forward_annotation,
             blacklist_fn=self.blacklist_annotation,

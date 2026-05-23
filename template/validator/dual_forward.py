@@ -42,13 +42,14 @@ from template.hazard.annotation_image_serve import (
     build_camouflaged_annotation_images,
     cleanup_ephemeral_annotation_files,
 )
-from template.hazard.golden_injection import InjectionPlan
+from template.hazard.golden_injection import GoldenInjector, InjectionPlan
 from template.hazard.image_corpus import ImageCorpus
 from template.hazard.r2_storage import download_bytes_from_r2, load_r2_credentials_from_env
 from template.hazard.submission_dedup import AnnotationDuplicateTracker
 from template.protocol import (
     AnnotationTask,
     AnnotationsFilePayload,
+    LabeledTrainingImage,
     PerImageAnnotationItem,
     R2AccessCredentials,
 )
@@ -183,7 +184,16 @@ async def _dual_flywheel_forward_impl(
     serving_base = str(getattr(self.config.neuron, "flywheel_image_serving_base_url", "") or "")
     rng = self.random
 
-    full_plan = _build_full_dataset_plan(corpus)
+    round_plan = _build_round_annotation_plan(self, corpus)
+
+    # Build training pool (public labeled images for miner fine-tuning)
+    training_pool_items = _build_training_pool(corpus, serving_base)
+    training_pool_hash = _compute_training_pool_hash(training_pool_items)
+    bt.logging.info(
+        f"event=training_pool_built count={len(training_pool_items)} "
+        f"hash={training_pool_hash[:16]}…"
+    )
+
     synapses_by_uid: Dict[int, AnnotationTask] = {}
     nonces_by_uid: Dict[int, str] = {}
     for uid in uids:
@@ -191,7 +201,7 @@ async def _dual_flywheel_forward_impl(
         nonce = _build_challenge_nonce(self.step, uid, task_id)
         ann_images = await build_camouflaged_annotation_images(
             corpus=corpus,
-            plan=full_plan,
+            plan=round_plan,
             cache_root=corpus.cache_root,
             step=int(self.step),
             uid=int(uid),
@@ -204,6 +214,8 @@ async def _dual_flywheel_forward_impl(
             task_id=task_id,
             challenge_nonce=nonce,
             annotation_images=ann_images,
+            training_pool=training_pool_items,
+            training_pool_hash=training_pool_hash,
         )
         nonces_by_uid[uid] = nonce
 
@@ -261,7 +273,7 @@ async def _dual_flywheel_forward_impl(
             continue
 
         valid_records: Dict[str, List[PerImageAnnotationItem]] = {}
-        expected_ids = {image_id for image_id, _ in full_plan.ordered_images}
+        expected_ids = {image.image_id for image in synapse.annotation_images}
         version_samples: list[str] = []
         for record in payload.records:
             if record.image_id not in expected_ids:
@@ -292,6 +304,14 @@ async def _dual_flywheel_forward_impl(
         bt.logging.warning("event=annotation_flywheel_no_valid_uids step=%d" % self.step)
         return
 
+    expected_golden_ids_by_uid = {
+        uid: tuple(
+            image.image_id
+            for image in synapses_by_uid[uid].annotation_images
+            if corpus.is_golden(image.image_id)
+        )
+        for uid in valid_uids
+    }
     per_miner_scores = evaluate_round_annotations(
         corpus=corpus,
         annotations_by_uid=annotations_by_uid,
@@ -300,7 +320,40 @@ async def _dual_flywheel_forward_impl(
         hallucination_penalty=composer.hallucination_penalty_per_event,
         golden_missing_penalty=composer.golden_missing_penalty,
         reliability=getattr(self, "reliability", None),
+        expected_golden_ids_by_uid=expected_golden_ids_by_uid,
     )
+
+    for uid in valid_uids:
+        score = per_miner_scores.get(uid)
+        if score is None:
+            continue
+        golden_ids = expected_golden_ids_by_uid.get(uid, ())
+        golden_scores = [
+            score.fidelity_scores_by_image_id.get(image_id, 0.0)
+            for image_id in golden_ids
+        ]
+        bt.logging.info(
+            "event=evaluator_golden_score_payload uid=%s golden_images=%d "
+            "golden_missing=%d avg_fidelity=%.4f image_scores=%s"
+            % (
+                uid,
+                len(golden_ids),
+                score.golden_missing_count,
+                (
+                    sum(golden_scores) / len(golden_scores)
+                    if golden_scores else 0.0
+                ),
+                json.dumps(
+                    {
+                        image_id: round(
+                            score.fidelity_scores_by_image_id.get(image_id, 0.0), 6
+                        )
+                        for image_id in golden_ids
+                    },
+                    sort_keys=True,
+                ),
+            )
+        )
 
     winners = assembler.assemble(
         per_miner_scores=per_miner_scores,
@@ -351,3 +404,89 @@ def _build_full_dataset_plan(corpus: ImageCorpus) -> InjectionPlan:
         golden_image_ids=tuple(image.image_id for image in corpus.golden_images()),
         annotation_image_ids=tuple(image.image_id for image in corpus.annotation_images()),
     )
+
+
+def _build_round_annotation_plan(self, corpus: ImageCorpus) -> InjectionPlan:
+    request_size = int(
+        getattr(self.config.neuron, "flywheel_annotation_request_size", 0) or 0
+    )
+    golden_per_request = int(
+        getattr(self.config.neuron, "flywheel_golden_injection_per_request", 0) or 0
+    )
+    if request_size <= 0:
+        plan = _build_full_dataset_plan(corpus)
+        bt.logging.info(
+            "event=annotation_flywheel_plan mode=full_dataset total_images=%d golden=%d annotation=%d"
+            % (
+                len(plan.ordered_images),
+                len(plan.golden_image_ids),
+                len(plan.annotation_image_ids),
+            )
+        )
+        return plan
+
+    injector = GoldenInjector(
+        corpus=corpus,
+        request_size=request_size,
+        golden_per_request=golden_per_request,
+    )
+    plan = injector.build_plan(self.random)
+    bt.logging.info(
+        "event=annotation_flywheel_plan mode=injected request_size=%d golden=%d annotation=%d"
+        % (
+            len(plan.ordered_images),
+            len(plan.golden_image_ids),
+            len(plan.annotation_image_ids),
+        )
+    )
+    return plan
+
+
+def _build_training_pool(
+    corpus: ImageCorpus,
+    serving_base_url: str,
+) -> List[LabeledTrainingImage]:
+    items: List[LabeledTrainingImage] = []
+    for image in corpus.training_pool_images():
+        image_url = image.image_url
+        if serving_base_url:
+            local_path = corpus.known_image_path(image.image_id)
+            if local_path is not None:
+                image_url = local_path.name
+                base = serving_base_url if serving_base_url.endswith("/") else serving_base_url + "/"
+                image_url = base + image_url
+        items.append(
+            LabeledTrainingImage(
+                image_url=image_url,
+                image_id=image.image_id,
+                annotations=[
+                    PerImageAnnotationItem(
+                        hazard_class=ann.hazard_class,
+                        bounding_box=list(ann.bounding_box),
+                    )
+                    for ann in image.annotations
+                ],
+            )
+        )
+    return items
+
+
+def _compute_training_pool_hash(training_pool: List[LabeledTrainingImage]) -> str:
+    canonical = json.dumps(
+        [
+            {
+                "image_id": item.image_id,
+                "annotations": [
+                    {
+                        "hazard_class": ann.hazard_class,
+                        "bounding_box": list(ann.bounding_box),
+                    }
+                    for ann in item.annotations
+                ],
+            }
+            for item in sorted(training_pool, key=lambda entry: entry.image_id)
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
