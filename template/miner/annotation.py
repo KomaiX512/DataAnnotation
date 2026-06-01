@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,6 @@ from template.protocol import (
     AnnotationsFilePayload,
     ImageAnnotationDocument,
 )
-from template.miner.sim_annotate import perturb_annotations, random_annotations
 
 
 def fetch_url_bytes(url: str, *, timeout: float = 120.0) -> bytes:
@@ -66,14 +64,17 @@ class AnnotationEngine:
                 "Use 'yolo' (YOLO-only detector pipeline)."
             )
         self.annotation_backend = raw_backend.lower() if raw_backend else "yolo"
+        if self.annotation_backend != "yolo":
+            raise ValueError(
+                f"miner.annotation_backend={self.annotation_backend!r} is removed from production. "
+                "Use 'yolo' or select a training backend with miner.model_backend."
+            )
         self.r2_prefix = str(
             getattr(miner_cfg, "dual_flywheel_r2_prefix", "miners/annotations")
         ).strip()
-        self._sim_seed = int(getattr(miner_cfg, "sim_annotation_seed", 0))
-        self._sim_noise_px = int(getattr(miner_cfg, "sim_noise_px", 8))
 
         self.detector_checkpoint: Path | None = None
-        if self.annotation_backend in ("yolo", "yolo_medium"):
+        if self.annotation_backend == "yolo":
             detector = str(
                 getattr(miner_cfg, "detector_checkpoint", "")
                 or "yolov8s.pt"
@@ -110,25 +111,9 @@ class AnnotationEngine:
             remote_base = f"{self.r2_prefix.strip().rstrip('/')}/{synapse.task_id}/"
 
             records: list[ImageAnnotationDocument] = []
-            rng = random.Random(self._sim_seed ^ hash(synapse.task_id))
             for spec in synapse.annotation_images:
                 img_bytes = self._fetch_image(spec.image_url)
-                if self.annotation_backend == "random":
-                    from PIL import Image
-                    import io
-
-                    with Image.open(io.BytesIO(img_bytes)) as pil:
-                        w, h = pil.size
-                    items = random_annotations(width=w, height=h, rng=rng)
-                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    doc = ImageAnnotationDocument(
-                        image_id=spec.image_id,
-                        model_version=self.model_version,
-                        miner_uid=miner_hotkey,
-                        timestamp=ts,
-                        annotations=items,
-                    )
-                elif self.annotation_backend in ("yolo", "yolo_medium"):
+                if self.annotation_backend == "yolo":
                     assert self.detector_checkpoint is not None
                     from template.miner.detector_annotate import annotate_image_detector_only
 
@@ -139,23 +124,10 @@ class AnnotationEngine:
                         model_version=self.model_version,
                         miner_uid=miner_hotkey,
                     )
-                    if self.annotation_backend == "yolo_medium":
-                        from PIL import Image
-                        import io
-
-                        with Image.open(io.BytesIO(img_bytes)) as pil:
-                            w, h = pil.size
-                        doc.annotations = perturb_annotations(
-                            doc.annotations,
-                            width=w,
-                            height=h,
-                            rng=rng,
-                            noise_px=self._sim_noise_px,
-                        )
                 else:
                     raise ValueError(
                         f"Unknown annotation_backend: {self.annotation_backend!r}; "
-                        "use yolo, yolo_medium, or random."
+                        "use yolo."
                     )
                 records.append(doc)
 

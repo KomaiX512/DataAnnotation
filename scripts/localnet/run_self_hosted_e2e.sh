@@ -2,7 +2,7 @@
 # Self-Hosted Backend E2E (REAL chain path): reference YOLO server + N self_hosted miners
 # + validator, exercising the full annotation flywheel with REAL dendrite/axon networking.
 #
-# IMPORTANT: This does NOT use --mock. Under --mock the validator uses MockDendrite, which
+# IMPORTANT: This does NOT use --test-mode. In test mode the validator uses MockDendrite, which
 # fabricates the miner's annotations_uri locally and never calls the miner process or the
 # self-hosted server — so the real train->infer->upload->score round cannot happen.
 #
@@ -166,7 +166,7 @@ if [[ "$MINER_BACKEND" == "self_hosted" ]]; then
     --host 0.0.0.0 --port "$SELF_HOSTED_PORT"
     --train-epochs "$SELF_HOSTED_TRAIN_EPOCHS" --train-imgsz "$SELF_HOSTED_TRAIN_IMGSZ"
   )
-  [[ "$SELF_HOSTED_ADVERSARIAL_RANDOM_BOXES" == "1" ]] && SERVER_CMD+=(--adversarial-random-boxes)
+  [[ "$SELF_HOSTED_ADVERSARIAL_RANDOM_BOXES" == "1" ]] && SERVER_CMD+=(--test-mode --adversarial-random-boxes)
   "${SERVER_CMD[@]}" > "$LOGDIR/self_hosted_server.log" 2>&1 &
   SERVER_PID=$!
   log "Primary server PID=$SERVER_PID (:$SELF_HOSTED_PORT)"
@@ -176,7 +176,7 @@ if [[ "$MINER_BACKEND" == "self_hosted" ]]; then
     "$NEURON_PYTHON" "$ROOT_DIR/scripts/reference_self_hosted_server.py" \
       --host 0.0.0.0 --port "$SELF_HOSTED_PORT2" \
       --train-epochs "$SELF_HOSTED_TRAIN_EPOCHS" --train-imgsz "$SELF_HOSTED_TRAIN_IMGSZ" \
-      --adversarial-random-boxes > "$LOGDIR/self_hosted_server_adversarial.log" 2>&1 &
+      --test-mode --adversarial-random-boxes > "$LOGDIR/self_hosted_server_adversarial.log" 2>&1 &
     SERVER2_PID=$!
     log "Adversarial server PID=$SERVER2_PID (:$SELF_HOSTED_PORT2) — last miner points here"
     wait_server "$SERVER2_URL" "$LOGDIR/self_hosted_server_adversarial.log"

@@ -164,7 +164,7 @@ IFS=',' read -r -a NAMES <<< "$MINER_WALLET_NAMES"
 IFS=',' read -r -a HOTKEYS <<< "$MINER_WALLET_HOTKEYS"
 IFS=',' read -r -a PORTS <<< "$MINER_PORTS"
 IFS=',' read -r -a PREFIXES <<< "$R2_PREFIXES"
-IFS=',' read -r -a BACKENDS <<< "${MINER_BACKENDS:-yolo,yolo_medium,random}"
+IFS=',' read -r -a BACKENDS <<< "${MINER_BACKENDS:-yolo,yolo,yolo}"
 
 if [[ "${#NAMES[@]}" -ne "$MINER_COUNT" || "${#HOTKEYS[@]}" -ne "$MINER_COUNT" || "${#PORTS[@]}" -ne "$MINER_COUNT" || "${#PREFIXES[@]}" -ne "$MINER_COUNT" ]]; then
   log "ERROR: need MINER_COUNT=$MINER_COUNT entries each: MINER_WALLET_NAMES, MINER_WALLET_HOTKEYS, MINER_PORTS, R2_PREFIXES."

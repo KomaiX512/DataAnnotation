@@ -16,8 +16,7 @@ Usage::
     python neurons/miner.py \\
         --miner.model_backend self_hosted \\
         --miner.self_hosted_train_url http://localhost:8081/train \\
-        --miner.self_hosted_infer_url http://localhost:8081/infer \\
-        --mock
+        --miner.self_hosted_infer_url http://localhost:8081/infer
 """
 
 from __future__ import annotations
@@ -748,12 +747,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--adversarial-random-boxes",
         action="store_true",
-        help="Return intentionally poor random boxes from /infer for bad-miner testing.",
+        help="Test mode only: return intentionally poor random boxes from /infer.",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Allow test-only synthetic/adversarial behavior.",
     )
     parser.add_argument("--train-epochs", type=int, default=5, help="Default training epochs (when request omits it).")
     parser.add_argument("--train-imgsz", type=int, default=640, help="Default training image size (when request omits it).")
     parser.add_argument("--train-batch", type=int, default=8, help="Default training batch size (when request omits it).")
     args = parser.parse_args()
+    if args.adversarial_random_boxes and not args.test_mode:
+        raise SystemExit("--adversarial-random-boxes requires --test-mode")
 
     _default_checkpoint = args.checkpoint
     _workspace = args.workspace

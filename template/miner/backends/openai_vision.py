@@ -45,6 +45,7 @@ class OpenAIVisionBackend(BaseModelBackend):
         self.base_model = str(
             getattr(miner_cfg, "openai_base_model", "gpt-4o-2024-08-06")
         ).strip()
+        self.base_url = str(getattr(miner_cfg, "openai_base_url", "") or "").strip()
         self.n_epochs = int(getattr(miner_cfg, "openai_n_epochs", 3))
         self.batch_size = int(getattr(miner_cfg, "openai_batch_size", 1))
         self.lr_multiplier = float(
@@ -89,7 +90,7 @@ class OpenAIVisionBackend(BaseModelBackend):
 
         import openai
 
-        client = openai.OpenAI(api_key=self.api_key)
+        client = self._client(openai)
 
         # 1. Build JSONL training file
         jsonl_path = self._build_training_jsonl(train_images)
@@ -171,7 +172,7 @@ class OpenAIVisionBackend(BaseModelBackend):
     ) -> Dict[str, List[PerImageAnnotationItem]]:
         import openai
 
-        client = openai.OpenAI(api_key=self.api_key)
+        client = self._client(openai)
         model_id = self._fine_tuned_model_id or model_version or self.base_model
 
         bt.logging.info(
@@ -190,6 +191,12 @@ class OpenAIVisionBackend(BaseModelBackend):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _client(self, openai_module):
+        kwargs = {"api_key": self.api_key}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        return openai_module.OpenAI(**kwargs)
 
     def _build_training_jsonl(self, images: List[TrainImage]) -> Path:
         """Build an OpenAI vision fine-tuning JSONL file."""

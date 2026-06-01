@@ -17,11 +17,96 @@
 # DEALINGS IN THE SOFTWARE.
 
 import os
+import sys
 import subprocess
 import argparse
 from pathlib import Path
 import bittensor as bt
 from .logging import setup_events_logger
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+
+_ENV_ARG_MAP = {
+    "NETUID": "--netuid",
+    "WALLET_NAME": "--wallet.name",
+    "WALLET_HOTKEY": "--wallet.hotkey",
+    "SUBTENSOR_NETWORK": "--subtensor.network",
+    "SUBTENSOR_CHAIN_ENDPOINT": "--subtensor.chain_endpoint",
+    "MINER_MODEL_BACKEND": "--miner.model_backend",
+    "MINER_ANNOTATION_WORKSPACE": "--miner.annotation_workspace",
+    "MINER_R2_PREFIX": "--miner.dual_flywheel_r2_prefix",
+    "SELF_HOSTED_TRAIN_URL": "--miner.self_hosted_train_url",
+    "SELF_HOSTED_INFER_URL": "--miner.self_hosted_infer_url",
+    "SELF_HOSTED_API_KEY": "--miner.self_hosted_api_key",
+    "SELF_HOSTED_POLL_INTERVAL_SECONDS": "--miner.self_hosted_poll_interval_seconds",
+    "YOLO_MODEL_PATH": "--miner.yolo_pretrained_weights",
+    "YOLO_EPOCHS": "--miner.yolo_epochs",
+    "YOLO_IMGSZ": "--miner.yolo_imgsz",
+    "YOLO_BATCH": "--miner.yolo_batch",
+    "OPENAI_API_KEY": "--miner.openai_api_key",
+    "OPENAI_BASE_URL": "--miner.openai_base_url",
+    "OPENAI_BASE_MODEL": "--miner.openai_base_model",
+    "OPENAI_N_EPOCHS": "--miner.openai_n_epochs",
+    "OPENAI_BATCH_SIZE": "--miner.openai_batch_size",
+    "OPENAI_LEARNING_RATE_MULTIPLIER": "--miner.openai_learning_rate_multiplier",
+    "VALIDATOR_GOLDEN_DATASET": "--neuron.flywheel_golden_dataset_id",
+    "VALIDATOR_GOLDEN_SPLIT": "--neuron.flywheel_golden_split",
+    "VALIDATOR_GOLDEN_RATIO": "--neuron.flywheel_golden_ratio",
+    "VALIDATOR_GOLDEN_SPLIT_SEED": "--neuron.flywheel_golden_split_seed",
+    "VALIDATOR_ANNOTATION_DATASET": "--neuron.flywheel_annotation_dataset_ids",
+    "VALIDATOR_ANNOTATION_SPLIT": "--neuron.flywheel_annotation_split",
+    "VALIDATOR_ANNOTATION_MAX_PER_DATASET": "--neuron.flywheel_annotation_max_per_dataset",
+    "VALIDATOR_COCO_MANIFEST": "--neuron.flywheel_coco_manifest",
+    "VALIDATOR_IMAGE_CACHE_ROOT": "--neuron.flywheel_image_cache_root",
+    "VALIDATOR_IMAGE_SERVING_BASE_URL": "--neuron.flywheel_image_serving_base_url",
+    "VALIDATOR_REQUEST_SIZE": "--neuron.flywheel_annotation_request_size",
+    "VALIDATOR_GOLDEN_INJECTION_PER_REQUEST": "--neuron.flywheel_golden_injection_per_request",
+    "VALIDATOR_COMMERCIAL_DATASET_PREFIX": "--neuron.flywheel_commercial_dataset_prefix",
+    "VALIDATOR_COMMERCIAL_EXPORT_EVERY": "--neuron.flywheel_commercial_export_every",
+    "VALIDATOR_FORWARD_STEP_SLEEP_SECONDS": "--neuron.forward_step_sleep_seconds",
+    "VALIDATOR_SAMPLE_SIZE": "--neuron.sample_size",
+    "VALIDATOR_TIMEOUT": "--neuron.timeout",
+    "VALIDATOR_ANNOTATION_TIMEOUT": "--neuron.annotation_timeout",
+    "VALIDATOR_NUM_CONCURRENT_FORWARDS": "--neuron.num_concurrent_forwards",
+}
+
+_ENV_FLAG_MAP = {
+    "TEST_MODE": "--test-mode",
+    "MINER_SKIP_TRAINING": "--miner.skip_training",
+    "MINER_FORCE_RETRAIN": "--miner.force_retrain",
+    "VALIDATOR_DISABLE_SET_WEIGHTS": "--neuron.disable_set_weights",
+    "VALIDATOR_AXON_OFF": "--neuron.axon_off",
+}
+
+
+def _truthy_env(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _load_env_file() -> None:
+    if load_dotenv is not None:
+        load_dotenv()
+
+
+def _argv_has_option(argv: list[str], option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in argv)
+
+
+def _argv_with_env_defaults(argv: list[str]) -> list[str]:
+    out = list(argv)
+    for env_name, option in _ENV_ARG_MAP.items():
+        value = os.getenv(env_name, "").strip()
+        if value and not _argv_has_option(out, option):
+            out.extend([option, value])
+    for env_name, option in _ENV_FLAG_MAP.items():
+        value = os.getenv(env_name, "").strip()
+        if value and _truthy_env(value) and not _argv_has_option(out, option):
+            out.append(option)
+    return out
 
 
 def is_cuda_available():
@@ -90,9 +175,9 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
-        "--mock",
+        "--test-mode",
         action="store_true",
-        help="Mock neuron and all network components.",
+        help="Use in-memory mock wallet/subtensor/metagraph/dendrite/axon for tests only.",
         default=False,
     )
 
@@ -167,26 +252,13 @@ def add_miner_args(cls, parser):
     parser.add_argument(
         "--miner.annotation_backend",
         type=str,
-        choices=["yolo", "yolo_medium", "random"],
+        choices=["yolo"],
         help=(
-            "Legacy annotation backend: yolo (YOLO-only detection), yolo_medium (YOLO-only + box noise), "
-            "random (deliberately poor boxes for acceptance tests)."
+            "Legacy annotation backend: yolo (YOLO-only detection). Synthetic backends were removed "
+            "from production paths."
         ),
         default="yolo",
     )
-    parser.add_argument(
-        "--miner.sim_annotation_seed",
-        type=int,
-        help="RNG seed base for yolo_medium / random simulation backends.",
-        default=0,
-    )
-    parser.add_argument(
-        "--miner.sim_noise_px",
-        type=int,
-        help="Max pixel jitter for yolo_medium backend.",
-        default=8,
-    )
-
     parser.add_argument(
         "--miner.detector_checkpoint",
         type=str,
@@ -319,6 +391,12 @@ def add_miner_args(cls, parser):
         "--miner.openai_api_key",
         type=str,
         help="OpenAI API key for the openai_vision backend.",
+        default="",
+    )
+    parser.add_argument(
+        "--miner.openai_base_url",
+        type=str,
+        help="Optional OpenAI-compatible API base URL for integration tests or gateways.",
         default="",
     )
     parser.add_argument(
@@ -648,10 +726,18 @@ def config(cls):
     """
     Returns the configuration object specific to this miner or validator after adding relevant arguments.
     """
+    _load_env_file()
     parser = argparse.ArgumentParser()
     bt.wallet.add_args(parser)
     bt.subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)
     cls.add_args(parser)
-    return bt.config(parser)
+    original_argv = sys.argv
+    sys.argv = _argv_with_env_defaults(sys.argv)
+    try:
+        cfg = bt.config(parser)
+    finally:
+        sys.argv = original_argv
+    cfg.mock = bool(getattr(cfg, "test_mode", False))
+    return cfg

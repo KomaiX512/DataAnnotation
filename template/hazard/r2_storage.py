@@ -128,10 +128,14 @@ def upload_directory_to_r2(
 
 
 def load_r2_credentials_from_env() -> R2AccessCredentials:
+    endpoint = (
+        os.getenv("R2_ENDPOINT_URL", "").strip()
+        or os.getenv("R2_S3_ENDPOINT", "").strip()
+    )
     required = {
-        "R2_ACCOUNT_ID": os.getenv("R2_ACCOUNT_ID", "").strip(),
+        "R2_ACCOUNT_ID": os.getenv("R2_ACCOUNT_ID", "").strip() or "r2",
         "R2_BUCKET_NAME": os.getenv("R2_BUCKET_NAME", "").strip(),
-        "R2_S3_ENDPOINT": os.getenv("R2_S3_ENDPOINT", "").strip(),
+        "R2_ENDPOINT_URL": endpoint,
         "R2_ACCESS_KEY_ID": os.getenv("R2_ACCESS_KEY_ID", "").strip(),
         "R2_SECRET_ACCESS_KEY": os.getenv("R2_SECRET_ACCESS_KEY", "").strip(),
     }
@@ -151,7 +155,7 @@ def load_r2_credentials_from_env() -> R2AccessCredentials:
     return R2AccessCredentials(
         account_id=required["R2_ACCOUNT_ID"],
         bucket_name=required["R2_BUCKET_NAME"],
-        s3_endpoint=required["R2_S3_ENDPOINT"],
+        s3_endpoint=required["R2_ENDPOINT_URL"],
         access_key_id=required["R2_ACCESS_KEY_ID"],
         secret_access_key=required["R2_SECRET_ACCESS_KEY"],
         token=session_tok,
