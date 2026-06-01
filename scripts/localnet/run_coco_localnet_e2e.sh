@@ -40,9 +40,9 @@ FORWARD_STEP_SLEEP_SECONDS="${FORWARD_STEP_SLEEP_SECONDS:-300}"
 MINER_COUNT="${MINER_COUNT:-3}"
 NEURON_SAMPLE_SIZE="${NEURON_SAMPLE_SIZE:-3}"
 
-# Backends: good YOLO (detector-only), medium (detector + noise), poor (random boxes)
-MINER_BACKENDS="${MINER_BACKENDS:-yolo_det,yolo_det_medium,random}"
-R2_PREFIXES="${R2_PREFIXES:-localnet/coco_m1_yolo,localnet/coco_m2_medium,localnet/coco_m3_random}"
+# Backends: all localnet miners use the real YOLO detector path.
+MINER_BACKENDS="${MINER_BACKENDS:-yolo,yolo,yolo}"
+R2_PREFIXES="${R2_PREFIXES:-localnet/coco_m1_yolo,localnet/coco_m2_yolo,localnet/coco_m3_yolo}"
 
 COMMERCIAL_PREFIX="${COMMERCIAL_PREFIX:-file://$ROOT_DIR/artifacts/localnet/coco_commercial}"
 export FORCE_LOCAL_SET_WEIGHTS="${FORCE_LOCAL_SET_WEIGHTS:-1}"
@@ -84,6 +84,8 @@ export FLYWHEEL_GOLDEN_MISSING_PENALTY=0.5
 export FLYWHEEL_COMMERCIAL_EXPORT_EVERY=1
 export FLYWHEEL_COMMERCIAL_DATASET_PREFIX="$COMMERCIAL_PREFIX"
 export FLYWHEEL_IMAGE_CACHE_ROOT="$ROOT_DIR/artifacts/localnet/coco_image_cache"
+export FLYWHEEL_ANNOTATION_REQUEST_SIZE="${FLYWHEEL_ANNOTATION_REQUEST_SIZE:-15}"
+export FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST="${FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST:-5}"
 export NEURON_ANNOTATION_TIMEOUT=3600
 mkdir -p "$ROOT_DIR/artifacts/localnet/coco_commercial" "$ROOT_DIR/artifacts/localnet/coco_image_cache"
 

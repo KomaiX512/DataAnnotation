@@ -409,6 +409,7 @@ def evaluate_round_annotations(
     hallucination_penalty: float,
     golden_missing_penalty: float = 0.0,
     reliability: _ReliabilityAccumulator | None = None,
+    expected_golden_ids_by_uid: Mapping[int, Sequence[str]] | None = None,
 ) -> Dict[int, PerMinerAnnotationScore]:
     """Compute per-miner fidelity + consensus scores for one round.
 
@@ -453,7 +454,12 @@ def evaluate_round_annotations(
                 score.consensus_scores_by_image_id[image_id] = comp.consensus
                 score.consensus_components_by_image_id[image_id] = comp
 
-        expected_golden = {g.image_id for g in corpus.golden_images()}
+        if expected_golden_ids_by_uid is None:
+            expected_golden = {g.image_id for g in corpus.golden_images()}
+        else:
+            expected_golden = {
+                image_id for image_id in expected_golden_ids_by_uid.get(uid, ())
+            }
         submitted = set(by_image.keys())
         for image_id in expected_golden:
             if image_id in submitted:

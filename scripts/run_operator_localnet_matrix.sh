@@ -164,7 +164,7 @@ IFS=',' read -r -a NAMES <<< "$MINER_WALLET_NAMES"
 IFS=',' read -r -a HOTKEYS <<< "$MINER_WALLET_HOTKEYS"
 IFS=',' read -r -a PORTS <<< "$MINER_PORTS"
 IFS=',' read -r -a PREFIXES <<< "$R2_PREFIXES"
-IFS=',' read -r -a BACKENDS <<< "${MINER_BACKENDS:-yolo,yolo_medium,random}"
+IFS=',' read -r -a BACKENDS <<< "${MINER_BACKENDS:-yolo,yolo,yolo}"
 
 if [[ "${#NAMES[@]}" -ne "$MINER_COUNT" || "${#HOTKEYS[@]}" -ne "$MINER_COUNT" || "${#PORTS[@]}" -ne "$MINER_COUNT" || "${#PREFIXES[@]}" -ne "$MINER_COUNT" ]]; then
   log "ERROR: need MINER_COUNT=$MINER_COUNT entries each: MINER_WALLET_NAMES, MINER_WALLET_HOTKEYS, MINER_PORTS, R2_PREFIXES."
@@ -241,6 +241,8 @@ VALIDATOR_CMD=(
 [[ -n "${FLYWHEEL_IMAGE_CACHE_ROOT:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_image_cache_root "$FLYWHEEL_IMAGE_CACHE_ROOT")
 [[ -n "${FLYWHEEL_GOLDEN_MISSING_PENALTY:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_golden_missing_penalty "$FLYWHEEL_GOLDEN_MISSING_PENALTY")
 [[ -n "${FLYWHEEL_COMMERCIAL_EXPORT_EVERY:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_commercial_export_every "$FLYWHEEL_COMMERCIAL_EXPORT_EVERY")
+[[ -n "${FLYWHEEL_ANNOTATION_REQUEST_SIZE:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_annotation_request_size "$FLYWHEEL_ANNOTATION_REQUEST_SIZE")
+[[ -n "${FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST:-}" ]] && VALIDATOR_CMD+=(--neuron.flywheel_golden_injection_per_request "$FLYWHEEL_GOLDEN_INJECTION_PER_REQUEST")
 [[ -n "${NEURON_ANNOTATION_TIMEOUT:-}" ]] && VALIDATOR_CMD+=(--neuron.annotation_timeout "$NEURON_ANNOTATION_TIMEOUT")
 "${VALIDATOR_CMD[@]}" >"$vlog" 2>&1 &
 PIDS+=("$!")

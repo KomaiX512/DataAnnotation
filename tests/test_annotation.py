@@ -66,14 +66,13 @@ def test_annotation_engine_rejects_deterministic_config(tmp_path: Path):
         AnnotationEngine(config=_Cfg())
 
 
-def test_annotation_engine_accepts_yolo_backend(tmp_path: Path):
+def test_annotation_engine_rejects_removed_simulation_backends(tmp_path: Path):
     class _Cfg:
         miner = _minimal_miner_config(tmp_path)
 
     _Cfg.miner.annotation_backend = "yolo_medium"
-    engine = AnnotationEngine(config=_Cfg())
-    assert engine.annotation_backend == "yolo_medium"
-    assert engine.detector_checkpoint is not None
+    with pytest.raises(ValueError, match="removed from production"):
+        AnnotationEngine(config=_Cfg())
 
 
 def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

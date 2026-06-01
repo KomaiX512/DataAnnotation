@@ -43,7 +43,10 @@ from template.hazard.image_corpus import (
     _severity_for_label,
 )
 from template.protocol import PerImageAnnotationItem
-from template.validator.dual_forward import _build_full_dataset_plan
+from template.validator.dual_forward import (
+    _build_full_dataset_plan,
+    _build_round_annotation_plan,
+)
 
 
 def test_image_corpus_normalized_annotation_entries_parses_at_split(tmp_path: Path):
@@ -204,6 +207,26 @@ def test_full_dataset_plan_contains_golden_and_annotation_images(tmp_path):
     assert all_ids == set(plan.golden_image_ids) | set(plan.annotation_image_ids)
 
 
+def test_round_annotation_plan_honors_request_size_and_golden_injection(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+
+    class Ns:
+        pass
+
+    self_obj = Ns()
+    self_obj.random = random.Random(7)
+    self_obj.config = Ns()
+    self_obj.config.neuron = Ns()
+    self_obj.config.neuron.flywheel_annotation_request_size = 4
+    self_obj.config.neuron.flywheel_golden_injection_per_request = 2
+
+    plan = _build_round_annotation_plan(self_obj, corpus)
+    assert len(plan.ordered_images) == 4
+    assert len(plan.golden_image_ids) == 2
+    assert len(plan.annotation_image_ids) == 2
+    assert len({iid for iid, _ in plan.ordered_images}) == 4
+
+
 # ---------------------------------------------------------------------------
 # Annotation fidelity + consensus scoring
 # ---------------------------------------------------------------------------
@@ -303,6 +326,30 @@ def test_evaluate_round_annotations_penalizes_missing_golden(tmp_path):
     assert scores[2].average_score(golden_missing_penalty=0.5) < scores[1].average_score(
         golden_missing_penalty=0.5
     )
+
+
+def test_evaluate_round_annotations_only_penalizes_missing_injected_golden(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    g1, g2 = corpus.golden_images()
+    annotations_by_uid = {
+        1: {g1.image_id: [_miner_item()]},
+        2: {},
+    }
+    scores = evaluate_round_annotations(
+        corpus=corpus,
+        annotations_by_uid=annotations_by_uid,
+        fidelity_scorer=AnnotationFidelityScorer(),
+        consensus_scorer=ConsensusScorer(),
+        hallucination_penalty=0.5,
+        golden_missing_penalty=0.5,
+        expected_golden_ids_by_uid={
+            1: [g1.image_id],
+            2: [g1.image_id],
+        },
+    )
+    assert scores[1].golden_missing_count == 0
+    assert scores[2].golden_missing_count == 1
+    assert g2.image_id not in scores[2].fidelity_scores_by_image_id
 
 
 def test_evaluate_round_annotations_aggregates_correctly(tmp_path):

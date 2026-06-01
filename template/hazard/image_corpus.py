@@ -145,6 +145,10 @@ class ImageCorpusConfig:
     # Modern ``datasets`` rejects legacy Hub dataset scripts; the parquet
     # snapshot branch is the supported load path for these repos.
     hf_revision: str = "refs/convert/parquet"
+    # Ratio of annotation pool images to expose as labeled Training Pool for miners.
+    # These images get ground-truth annotations shared with miners for fine-tuning.
+    training_pool_ratio: float = 0.15
+    training_pool_max: int = 30
     # When set, load Golden + pool from ``scripts/localnet/prepare_coco_val2017_subset.py``
     # manifest instead of HuggingFace (localnet COCO acceptance tests).
     coco_manifest_path: str = ""
@@ -193,6 +197,7 @@ class ImageCorpus:
         self._loaded = False
         self._golden: List[GoldenImage] = []
         self._annotation: List[UnlabeledImage] = []
+        self._training_pool: List[GoldenImage] = []  # labeled subset of annotation pool
         self._benchmark: List[BenchmarkImage] = []
         self._golden_index: Dict[str, GoldenImage] = {}
         self._all_image_index: Dict[str, Path] = {}
@@ -230,6 +235,11 @@ class ImageCorpus:
     def annotation_images(self) -> List[UnlabeledImage]:
         self.ensure_loaded()
         return list(self._annotation)
+
+    def training_pool_images(self) -> List[GoldenImage]:
+        """Return the public Training Pool — labeled images shared with miners."""
+        self.ensure_loaded()
+        return list(self._training_pool)
 
     def benchmark_images(self) -> List[BenchmarkImage]:
         self.ensure_loaded()
