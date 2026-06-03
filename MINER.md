@@ -4,7 +4,7 @@ This guide walks through the full miner flow from Bittensor install to wallet re
 
 ## What a miner does
 
-Miners download unlabeled images, run a model to produce bounding boxes and class labels, then upload `annotations.json` to R2. Validators score miners against a hidden Golden Set and reward the best submissions.
+Miners download unlabeled images, run a vision model to produce bounding boxes and class labels, then upload `annotations.json` to R2. Validators score miners against a hidden Golden Set and reward the best submissions. This subnet is model-agnostic: any vision model is supported as long as it can produce the required labels.
 
 ## Step 0: Install prerequisites
 
@@ -75,11 +75,11 @@ Path guidance for `MINER_ANNOTATION_WORKSPACE`:
 
 ## Step 4: Choose a backend and configure it
 
-Set `MINER_MODEL_BACKEND` to one of the options below, then fill the matching variables in `.env`.
+Set `MINER_MODEL_BACKEND` to one of the options below, then fill the matching variables in `.env`. You can use any vision model; examples below mention YOLO only as a reference implementation.
 
 ### Backend A: `self_hosted`
 
-Use your own REST API that implements `/train` and `/infer`.
+Use your own REST API that implements `/train` and `/infer`. This is the most flexible path for any custom vision model.
 
 In `.env`:
 
@@ -89,7 +89,7 @@ SELF_HOSTED_TRAIN_URL=http://localhost:8081/train
 SELF_HOSTED_INFER_URL=http://localhost:8081/infer
 ```
 
-Optional: start the reference server (real YOLOv8 training and inference):
+Optional: start the reference server (YOLOv8 training and inference as an example):
 
 ```bash
 source .env
@@ -98,7 +98,7 @@ PYTHONPATH=. python server.py --host 127.0.0.1 --port 8081 --checkpoint yolov8n.
 
 ### Backend B: `yolo_local`
 
-Fine-tune YOLO on your GPU locally.
+Fine-tune a local vision model on your GPU (YOLO is the built-in reference backend).
 
 In `.env`:
 
@@ -112,7 +112,7 @@ YOLO_BATCH=16
 
 ### Backend C: `openai_vision`
 
-Use OpenAI fine-tuning. This can incur API costs.
+Use OpenAI fine-tuning for a hosted vision model. This can incur API costs.
 
 In `.env`:
 

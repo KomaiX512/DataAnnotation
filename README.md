@@ -1,5 +1,5 @@
 # Decentralized Data Annotation Subnet
-A Bittensor subnet where miners compete to annotate images with bounding boxes and hazard classes, and validators assemble the most accurate labels into a commercial dataset.
+A Bittensor subnet where miners compete to annotate images with bounding boxes and hazard classes, and validators assemble the most accurate labels into a commercial dataset. The design is model-agnostic: any vision model can be used for labeling as long as it produces the required outputs.
 
 ## How It Works
 
