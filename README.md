@@ -1,45 +1,55 @@
 # Decentralized Data Annotation Subnet
-
-This subnet turns Bittensor miners into competing image annotation workers. Validators send miners batches of images, miners label objects and hazards, and validators score the results against a hidden Golden Set plus peer consensus. The best accepted annotations are fused into an auditable commercial JSONL dataset.
+A Bittensor subnet where miners compete to annotate images with bounding boxes and hazard classes, and validators assemble the most accurate labels into a commercial dataset.
 
 ## How It Works
 
-1. Validators prepare a corpus with hidden Golden Set images and unlabeled annotation-pool images.
-2. Miners receive image URLs, train or adapt their selected backend, run inference, and upload `annotations.json` to Cloudflare R2.
-3. Validators download miner submissions, score Golden Set fidelity without leaking labels, compute rewards, set weights, and export accepted non-Golden annotations.
-4. The dataset assembler keeps provenance, confidence, reliability, and per-miner vote audit fields for every exported object.
+```text
++------------------+                   +--------------------+
+|                  |   Hidden Golden   |                    |
+|    Validator     |------------------>|       Miners       |
+|                  |       Set         |                    |
++------------------+                   +--------------------+
+         ^                                       |
+         | Downloads                             | Uploads
+         | Fused Consensus                       | Annotations
+         v                                       v
++------------------+                   +--------------------+
+|  Commercial      |                   |    Cloudflare R2   |
+|  JSONL Export    |<------------------|   Object Storage   |
++------------------+                   +--------------------+
+```
 
-## Quick Start
+1. **Validator** holds a secret Golden Set of human-verified labels.
+2. **Miners** download unlabeled images, run their own models, and upload annotations to Cloudflare R2.
+3. **Validator** scores miners on the Golden Set (hidden from miners), fuses the best annotations, and pays miners based on accuracy and consensus contribution.
+4. A **commercial JSONL dataset** is exported containing only high-confidence, non-Golden annotations.
+
+## Incentive Mechanism
+
+Miners earn rewards based on two things:
+
+* **Annotation Fidelity**: How well they label the hidden Golden Set images (IoU + class match).
+* **Adoption Bonus**: How often their annotations are selected for the final fused dataset.
+
+**Reward formula**: `Reward = alpha * Fidelity + (1-alpha) * Adoption_Bonus`
+
+Validators set on-chain weights proportionally; honest, high-quality miners earn the most TAO.
+
+## Quick Links
+
+* 📖 [Miner Guide](MINER.md)
+* 🔍 [Validator Guide](VALIDATOR.md)
+* 📊 [Subnet Architecture](docs/ARCHITECTURE.md)
+
+## Quick Start (3 steps)
 
 ```bash
-git clone <repo-url>
-cd bittensor-subnet-template-1
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/KomaiX512/JHA_subnet.git bittensor-subnet-template-1 && cd bittensor-subnet-template-1
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env   # fill in your credentials
 ```
 
-Edit `.env` with your wallet, subnet, Cloudflare R2 credentials, validator corpus, and miner backend. For a local miner using the reference REST backend, set:
+## Choosing a role
 
-```bash
-MINER_MODEL_BACKEND=self_hosted
-SELF_HOSTED_TRAIN_URL=http://localhost:8081/train
-SELF_HOSTED_INFER_URL=http://localhost:8081/infer
-```
-
-Run a validator:
-
-```bash
-source .env
-python neurons/validator.py
-```
-
-Run a miner:
-
-```bash
-source .env
-python neurons/miner.py
-```
-
-Miner setup details live in `MINER.md`; validator corpus, Golden Set, reward, and export details live in `VALIDATOR.md`.
+* To run a miner → read [MINER.md](MINER.md)
+* To run a validator → read [VALIDATOR.md](VALIDATOR.md)
