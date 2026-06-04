@@ -41,6 +41,7 @@ ROOT_COMMERCIAL_KEYS: frozenset[str] = frozenset(
         "score",
         "chosen_uid",
         "image_url",
+        "annotated_image_url",
         "width",
         "height",
         "is_golden",
@@ -105,6 +106,22 @@ def validate_commercial_row(row: Mapping[str, Any], *, line_no: int) -> List[str
     missing_root = ROOT_COMMERCIAL_KEYS - frozenset(row.keys())
     if missing_root:
         errors.append(f"line {line_no}: missing root keys {sorted(missing_root)}")
+    # Validate image_url is a reachable HTTP(S) link (not file://, r2://, or empty)
+    image_url = str(row.get("image_url") or "").strip()
+    if not image_url:
+        errors.append(f"line {line_no}: image_url is empty")
+    elif not image_url.startswith(("http://", "https://")):
+        errors.append(
+            f"line {line_no}: image_url must be HTTP(S), got {image_url[:80]!r}"
+        )
+    # Validate annotated_image_url is a reachable HTTP(S) link
+    annotated_image_url = str(row.get("annotated_image_url") or "").strip()
+    if not annotated_image_url:
+        errors.append(f"line {line_no}: annotated_image_url is empty")
+    elif not annotated_image_url.startswith(("http://", "https://")):
+        errors.append(
+            f"line {line_no}: annotated_image_url must be HTTP(S), got {annotated_image_url[:80]!r}"
+        )
     if row.get("escalation_required") is False:
         if not row.get("objects"):
             errors.append(f"line {line_no}: accepted row must have non-empty objects")

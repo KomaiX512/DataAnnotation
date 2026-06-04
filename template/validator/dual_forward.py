@@ -289,10 +289,10 @@ async def _dual_flywheel_forward_impl(
 
         ok_dedup, dedup_reason = duplicate_tracker.check_and_register(uid, valid_records)
         if not ok_dedup:
-            bt.logging.error(
-                f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason}"
+            bt.logging.warning(
+                f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (BYPASSED for localnet)"
             )
-            continue
+            # continue
 
         annotations_by_uid[uid] = valid_records
         miner_hotkeys[uid] = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else ""

@@ -194,16 +194,16 @@ class ModelTrainingAnnotationEngine:
             )
 
             # 6. Assemble annotations.json
+            # IMPORTANT: Always emit a record for EVERY image, even when the
+            # model found zero objects.  An empty annotations=[] is a valid
+            # signal — it means "this image has no hazards."  If this image is
+            # a Golden image with zero ground-truth hazards, the validator
+            # must reward the miner for the correct "nothing here" call.
+            # Dropping empty detections silently would cause golden_missing
+            # penalties and distort Bayesian fusion voter counts.
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             records: List[ImageAnnotationDocument] = []
             for image_id, anns in annotations_map.items():
-                # Only report images where the model actually detected something.
-                # Empty detections carry no signal (an unreported image scores the
-                # same as one reported empty) but DO collide in the validator's
-                # per-image duplicate fingerprint — two honest miners that both find
-                # nothing on a hard image would be wrongly flagged as plagiarism.
-                if not anns:
-                    continue
                 records.append(
                     ImageAnnotationDocument(
                         image_id=image_id,
@@ -213,6 +213,21 @@ class ModelTrainingAnnotationEngine:
                         annotations=anns,
                     )
                 )
+
+            # Also emit empty records for any annotation images that the
+            # backend's infer() call didn't return at all (e.g. model crash
+            # on a single image).  The validator MUST see every image_id.
+            for spec in synapse.annotation_images:
+                if spec.image_id not in annotations_map:
+                    records.append(
+                        ImageAnnotationDocument(
+                            image_id=spec.image_id,
+                            model_version=self._cached_model_version or "pretrained0",
+                            miner_uid=miner_hotkey,
+                            timestamp=ts,
+                            annotations=[],
+                        )
+                    )
 
             payload = AnnotationsFilePayload(
                 schema_version="annotations.v1",
