@@ -205,6 +205,32 @@ class YoloLocalBackend(BaseModelBackend):
         inference_images: List[InferImage],
         model_version: str,
     ) -> Dict[str, List[PerImageAnnotationItem]]:
+        import os
+        import random
+
+        if os.environ.get("MINER_ADVERSARIAL") == "1":
+            bt.logging.warning("MINER_ADVERSARIAL is active: returning synthetic garbage boxes!")
+            results_map: Dict[str, List[PerImageAnnotationItem]] = {}
+            rng = random.Random(1337)
+            for img in inference_images:
+                from PIL import Image as PILImage
+                try:
+                    pil_img = PILImage.open(str(img.image_path))
+                    width, height = pil_img.size
+                except Exception:
+                    width, height = 640, 640
+                x1 = rng.uniform(0, max(1.0, width * 0.6))
+                y1 = rng.uniform(0, max(1.0, height * 0.6))
+                x2 = min(float(width), x1 + rng.uniform(width * 0.1, width * 0.35))
+                y2 = min(float(height), y1 + rng.uniform(height * 0.1, height * 0.35))
+                results_map[img.image_id] = [
+                    PerImageAnnotationItem(
+                        hazard_class="adversarial_garbage",
+                        bounding_box=[x1, y1, x2, y2],
+                    )
+                ]
+            return results_map
+
         from ultralytics import YOLO
 
         checkpoint = self._fine_tuned_checkpoint or self.pretrained_weights

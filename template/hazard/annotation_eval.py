@@ -75,13 +75,27 @@ class AnnotationFidelityScorer:
     ) -> FidelityComponents:
         gt_annotations: Sequence[GoldenAnnotation] = golden.annotations
         if not gt_annotations:
+            # Golden image has zero ground-truth hazards.
+            if not miner_items:
+                # Miner correctly reports "nothing here" — perfect fidelity.
+                return FidelityComponents(
+                    iou=1.0,
+                    class_severity=1.0,
+                    fidelity=1.0,
+                    hallucination_penalty=1.0,
+                    matched_count=0,
+                    hallucinated_count=0,
+                    ground_truth_count=0,
+                )
+            # Miner hallucinated detections on a clean image — penalise.
+            penalty = self.hallucination_penalty ** len(miner_items)
             return FidelityComponents(
                 iou=0.0,
                 class_severity=0.0,
                 fidelity=0.0,
-                hallucination_penalty=1.0,
+                hallucination_penalty=float(penalty),
                 matched_count=0,
-                hallucinated_count=0,
+                hallucinated_count=len(miner_items),
                 ground_truth_count=0,
             )
 

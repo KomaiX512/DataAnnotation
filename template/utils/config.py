@@ -72,6 +72,8 @@ _ENV_ARG_MAP = {
     "VALIDATOR_TIMEOUT": "--neuron.timeout",
     "VALIDATOR_ANNOTATION_TIMEOUT": "--neuron.annotation_timeout",
     "VALIDATOR_NUM_CONCURRENT_FORWARDS": "--neuron.num_concurrent_forwards",
+    "COMMERCIAL_DRAW_BOXES": "--neuron.flywheel_commercial_draw_boxes",
+    "COMMERCIAL_ANNOTATED_IMAGE_PREFIX": "--neuron.flywheel_commercial_annotated_image_prefix",
 }
 
 _ENV_FLAG_MAP = {
@@ -706,6 +708,20 @@ def add_validator_args(cls, parser):
         type=int,
         help="Number of validator forward steps between commercial dataset exports.",
         default=10,
+    )
+    parser.add_argument(
+        "--commercial-draw-boxes",
+        "--neuron.flywheel_commercial_draw_boxes",
+        type=lambda x: str(x).lower() in ("true", "1", "yes"),
+        help="Draw bounding boxes and class labels onto exported commercial images.",
+        default=True,
+    )
+    parser.add_argument(
+        "--commercial-annotated-image-prefix",
+        "--neuron.flywheel_commercial_annotated_image_prefix",
+        type=str,
+        help="Prefix under which annotated images are uploaded in the commercial export.",
+        default="commercial/annotated-images/",
     )
     parser.add_argument(
         "--wandb.project_name",

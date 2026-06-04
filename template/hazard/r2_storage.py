@@ -173,3 +173,42 @@ def download_bytes_from_r2(uri: str, *, creds: R2AccessCredentials) -> bytes:
         return body.read()
     finally:
         body.close()
+
+
+def upload_image_to_r2(
+    image_path: Path,
+    *,
+    object_key: str,
+    creds: R2AccessCredentials,
+) -> str:
+    """Upload a local image to R2 and return a reachable HTTP(S) URL.
+
+    If ``creds.public_bucket_url`` is set (e.g.
+    ``https://pub-xxx.r2.dev``), the URL is built directly from the
+    public domain. Otherwise a presigned GET URL is issued.
+    """
+    content_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    ext = image_path.suffix.lower()
+    ct = content_types.get(ext, "application/octet-stream")
+
+    data = image_path.read_bytes()
+    upload_bytes_to_r2(data, object_key=object_key, creds=creds, content_type=ct)
+
+    # Build a reachable HTTP(S) URL
+    public_base = (creds.public_bucket_url or "").strip().rstrip("/")
+    if public_base:
+        return f"{public_base}/{object_key}"
+
+    # Fallback: issue a presigned GET URL
+    return generate_presigned_get_url(
+        creds=creds,
+        bucket=creds.bucket_name,
+        object_key=object_key,
+        expires_in=presigned_get_url_expires_seconds(),
+    )

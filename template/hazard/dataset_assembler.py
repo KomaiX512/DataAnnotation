@@ -7,7 +7,7 @@ import json
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
@@ -19,11 +19,23 @@ from template.hazard.image_corpus import ImageCorpus
 from template.protocol import PerImageAnnotationItem, R2AccessCredentials
 
 _BACKGROUND_CLASS = "_background"
-_DEFAULT_ACCEPT_CONFIDENCE = 0.9
-_DEFAULT_ACCEPT_SEVERITY_CONFIDENCE = 0.8
-_DEFAULT_MIN_VOTERS = 2
-_DEFAULT_MIN_MEAN_IOU_TO_MEDIAN = 0.7
+_DEFAULT_ACCEPT_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", "0.9"))
+_DEFAULT_ACCEPT_SEVERITY_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_SEVERITY_CONFIDENCE", "0.8"))
+_DEFAULT_MIN_VOTERS = int(os.getenv("DEFAULT_MIN_VOTERS", "2"))
+_DEFAULT_MIN_MEAN_IOU_TO_MEDIAN = float(os.getenv("DEFAULT_MIN_MEAN_IOU_TO_MEDIAN", "0.7"))
 _EPS = 1e-9
+
+# Single-miner fallback — adopt annotations from a lone reliable miner
+# rather than escalating (which makes the subnet look broken for early adopters).
+_FALLBACK_SINGLE_MINER_ENABLED = os.getenv(
+    "FALLBACK_SINGLE_MINER_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes")
+_FALLBACK_SINGLE_MINER_MIN_RELIABILITY = float(
+    os.getenv("FALLBACK_SINGLE_MINER_MIN_RELIABILITY", "0.3")
+)
+_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL = os.getenv(
+    "FALLBACK_SINGLE_MINER_AGGREGATION_LABEL", "single_miner_fallback_v1"
+).strip()
 
 
 @dataclass(frozen=True)
@@ -100,6 +112,7 @@ class WinningAnnotation:
     acceptance_thresholds: Dict[str, float]
     validator_version: str
     timestamp: str
+    annotated_image_url: Optional[str] = None
 
     def to_jsonable(self) -> dict:
         payload = {
@@ -107,6 +120,7 @@ class WinningAnnotation:
             "score": float(self.score),
             "chosen_uid": int(self.chosen_uid),
             "image_url": self.image_url,
+            "annotated_image_url": self.annotated_image_url,
             "width": int(self.width),
             "height": int(self.height),
             "is_golden": bool(self.is_golden),
@@ -202,6 +216,8 @@ class DatasetAssembler:
     corpus: ImageCorpus
     storage_prefix: str  # file://..., r2://bucket/prefix/, s3://bucket/prefix/
     ledger: AdoptionLedger = field(default_factory=AdoptionLedger)
+    draw_boxes: bool = True
+    annotated_prefix: str = "commercial/annotated-images/"
 
     def assemble(
         self,
@@ -307,6 +323,10 @@ class DatasetAssembler:
         Golden-track rows (``is_golden``) are used for scoring and adoption only;
         they are never written to the commercial JSONL so the hidden Golden Set
         cannot leak to customers.
+
+        **Self-contained export**: for each commercial row, the image is uploaded
+        to R2 and ``image_url`` in the JSONL is replaced with a permanent,
+        publicly-reachable HTTP(S) URL.
         """
         if not winners:
             bt.logging.info("event=dataset_export_skip reason=no_winners")
@@ -323,8 +343,80 @@ class DatasetAssembler:
             bt.logging.info("event=dataset_export_skip reason=no_commercial_rows")
             return ""
 
+        # --- Upload images and rewrite image_url to public HTTP(S) ---
+        creds = commercial_r2_credentials
+        if creds is None:
+            try:
+                from template.hazard.r2_storage import load_r2_credentials_from_env
+                creds = load_r2_credentials_from_env()
+            except RuntimeError:
+                creds = None
+
+        rewritten: List[dict] = []
+        for w in commercial:
+            row_image_url = w.image_url
+            row_annotated_image_url = None
+            image_path = self.corpus.known_image_path(w.image_id)
+            bt.logging.info(
+                f"DEBUG DRAW: image_id={w.image_id[:16]} "
+                f"draw_boxes={self.draw_boxes} "
+                f"image_path={image_path} "
+                f"exists={image_path.exists() if image_path else False}"
+            )
+
+            # Try to upload the clean image to R2 for a self-contained dataset
+            if creds is not None:
+                public_url = self._upload_commercial_image(
+                    image_id=w.image_id,
+                    round_id=round_id,
+                    creds=creds,
+                )
+                if public_url:
+                    row_image_url = public_url
+
+            # Try to draw bounding boxes and labels and upload/save annotated version
+            if self.draw_boxes and image_path is not None and image_path.exists():
+                try:
+                    temp_annotated = self._draw_annotations(image_path, w.accepted_objects)
+
+                    # 1. Local copy if local storage prefix (file://) is active
+                    parsed_prefix = urlparse(self.storage_prefix or "")
+                    if parsed_prefix.scheme == "file":
+                        local_annotated_dir = Path(parsed_prefix.path) / self.annotated_prefix
+                        local_annotated_dir.mkdir(parents=True, exist_ok=True)
+                        local_annotated_path = local_annotated_dir / f"{w.image_id}{image_path.suffix}"
+                        import shutil
+                        shutil.copy(str(temp_annotated), str(local_annotated_path))
+                        row_annotated_image_url = local_annotated_path.as_uri()
+
+                    # 2. Upload to R2 if credentials are provided
+                    if creds is not None:
+                        try:
+                            from template.hazard.r2_storage import upload_image_to_r2
+                            object_key = f"{self.annotated_prefix}{w.image_id}{image_path.suffix}"
+                            r2_url = upload_image_to_r2(
+                                temp_annotated, object_key=object_key, creds=creds
+                            )
+                            if r2_url:
+                                row_annotated_image_url = r2_url
+                        except Exception as e:
+                            bt.logging.error(f"Failed to upload annotated image to R2: {e}")
+
+                    # Cleanup temporary file
+                    if temp_annotated.exists():
+                        temp_annotated.unlink()
+                except Exception as e:
+                    bt.logging.error(f"Error drawing annotations on image {w.image_id}: {e}")
+
+            w_updated = replace(
+                w,
+                image_url=row_image_url,
+                annotated_image_url=row_annotated_image_url,
+            )
+            rewritten.append(w_updated.to_jsonable())
+
         payload_lines = "\n".join(
-            json.dumps(w.to_jsonable(), sort_keys=True) for w in commercial
+            json.dumps(row, sort_keys=True) for row in rewritten
         )
         body = (payload_lines + "\n").encode("utf-8")
 
@@ -332,19 +424,162 @@ class DatasetAssembler:
         if parsed.scheme == "file":
             return self._export_local(body, parsed, round_id)
         if parsed.scheme in ("r2", "s3"):
-            if commercial_r2_credentials is None:
+            if creds is None:
                 raise ValueError(
                     "commercial_r2_credentials are required to export to "
                     f"{parsed.scheme}:// storage."
                 )
             return self._export_object_storage(
-                body, parsed, round_id, commercial_r2_credentials
+                body, parsed, round_id, creds
             )
         raise ValueError(
             f"Unsupported commercial dataset storage scheme: {self.storage_prefix!r}"
         )
 
+    def _draw_annotations(
+        self,
+        image_path: Path,
+        objects: Sequence[AggregatedObject],
+    ) -> Path:
+        """Draw bounding boxes and class labels onto a copy of the image, returning its temp path."""
+        from PIL import Image as PILImage, ImageDraw, ImageFont
+        import tempfile
+
+        with PILImage.open(image_path) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+
+            draw = ImageDraw.Draw(img)
+            w_img, h_img = img.size
+
+            try:
+                # Use standard system sans-serif font
+                font = ImageFont.truetype("DejaVuSans.ttf", 16)
+            except Exception:
+                try:
+                    font = ImageFont.truetype("arial.ttf", 16)
+                except Exception:
+                    font = ImageFont.load_default()
+
+            for obj in objects:
+                if not obj.accepted_hazard_class or obj.accepted_hazard_class == "_background":
+                    continue
+                if not obj.fused_bounding_box:
+                    continue
+
+                xmin, ymin, xmax, ymax = obj.fused_bounding_box
+                # Handle normalized coordinates
+                if all(0.0 <= c <= 1.0 for c in (xmin, ymin, xmax, ymax)):
+                    xmin *= w_img
+                    ymin *= h_img
+                    xmax *= w_img
+                    ymax *= h_img
+
+                xmin = max(0.0, min(float(w_img), xmin))
+                ymin = max(0.0, min(float(h_img), ymin))
+                xmax = max(0.0, min(float(w_img), xmax))
+                ymax = max(0.0, min(float(h_img), ymax))
+
+                if xmax <= xmin or ymax <= ymin:
+                    continue
+
+                color = self._get_color_for_class(obj.accepted_hazard_class)
+
+                # Draw thick bounding box
+                for offset in range(3):
+                    draw.rectangle(
+                        [xmin + offset, ymin + offset, xmax - offset, ymax - offset],
+                        outline=color,
+                    )
+
+                label = f"{obj.accepted_hazard_class} ({obj.confidence:.2f})"
+
+                try:
+                    # In Pillow >= 10.0.0
+                    text_bbox = draw.textbbox((0, 0), label, font=font)
+                    text_w = text_bbox[2] - text_bbox[0]
+                    text_h = text_bbox[3] - text_bbox[1]
+                except AttributeError:
+                    # Legacy Pillow
+                    text_w, text_h = draw.textsize(label, font=font)
+
+                text_x1 = xmin
+                text_y1 = max(0.0, ymin - text_h - 4)
+                text_x2 = min(float(w_img), xmin + text_w + 6)
+                text_y2 = min(float(h_img), ymin)
+
+                # Draw filled label background
+                draw.rectangle(
+                    [text_x1, text_y1, text_x2, text_y2],
+                    fill=color,
+                )
+
+                brightness = (color[0] * 299 + color[1] * 587 + color[2] * 114) / 1000
+                text_color = (0, 0, 0) if brightness > 127 else (255, 255, 255)
+
+                draw.text(
+                    (text_x1 + 3, text_y1 + 2),
+                    label,
+                    fill=text_color,
+                    font=font,
+                )
+
+            temp_dir = tempfile.gettempdir()
+            temp_path = Path(temp_dir) / f"annotated_{image_path.name}"
+            img.save(temp_path)
+            return temp_path
+
+    @staticmethod
+    def _get_color_for_class(cls_name: str) -> Tuple[int, int, int]:
+        """Generate a deterministic vibrant RGB color for a given class name."""
+        h = hashlib.md5(cls_name.encode('utf-8')).digest()
+        r = (h[0] * 7 + 13) % 200 + 55
+        g = (h[1] * 7 + 13) % 200 + 55
+        b = (h[2] * 7 + 13) % 200 + 55
+        return (r, g, b)
     # ------------------------------------------------------------------ helpers
+
+    def _upload_commercial_image(
+        self,
+        *,
+        image_id: str,
+        round_id: str,
+        creds: R2AccessCredentials,
+    ) -> str:
+        """Upload a single image to R2 for inclusion in the commercial dataset.
+
+        Returns a public HTTP(S) URL, or empty string if the image can't be found.
+        Images are uploaded under ``commercial-images/<image_id>.<ext>`` and are
+        idempotent — re-uploading the same image_id is a no-op at the R2 level
+        (same key overwrites with identical content).
+        """
+        image_path = self.corpus.known_image_path(image_id)
+        if image_path is None or not image_path.exists():
+            bt.logging.warning(
+                "event=commercial_image_upload_skip image_id=%s reason=not_found",
+                image_id[:16],
+            )
+            return ""
+        try:
+            from template.hazard.r2_storage import upload_image_to_r2
+
+            object_key = f"commercial-images/{image_id}{image_path.suffix}"
+            url = upload_image_to_r2(
+                image_path, object_key=object_key, creds=creds
+            )
+            bt.logging.debug(
+                "event=commercial_image_uploaded image_id=%s url=%s",
+                image_id[:16], url[:80],
+            )
+            return url
+        except Exception as exc:
+            bt.logging.warning(
+                "event=commercial_image_upload_error image_id=%s error=%s",
+                image_id[:16], exc,
+            )
+            return ""
+
+    # ------------------------------------------------------------------ helpers (continued)
     def _class_priors(self) -> Dict[str, float]:
         counts: Dict[str, float] = {}
         alpha = 1.1
@@ -385,9 +620,69 @@ class DatasetAssembler:
     ) -> dict:
         miner_ids = sorted(image_votes.keys())
         if len(miner_ids) < 2:
+            sole_uid = miner_ids[0] if miner_ids else -1
+            # --- Single-miner fallback policy ---
+            if (
+                _FALLBACK_SINGLE_MINER_ENABLED
+                and sole_uid >= 0
+                and image_votes.get(sole_uid)
+            ):
+                sole_score = per_miner_scores.get(sole_uid)
+                sole_reliability = (
+                    sole_score.average_score() if sole_score else 0.0
+                )
+                if sole_reliability >= _FALLBACK_SINGLE_MINER_MIN_RELIABILITY:
+                    # Adopt the lone miner's annotations directly.
+                    sole_items = image_votes[sole_uid]
+                    fallback_objects: List[AggregatedObject] = []
+                    for idx, item in enumerate(sole_items):
+                        cls = _safe_class(item.hazard_class)
+                        from template.hazard.image_corpus import _severity_for_label
+                        sev = _severity_for_label(cls)
+                        box = tuple(float(v) for v in item.bounding_box)
+                        vote = MinerVote(
+                            miner_uid=sole_uid,
+                            miner_hotkey=str(miner_hotkeys.get(sole_uid, "")),
+                            class_voted=cls,
+                            severity_voted=sev,
+                            confidence=float(
+                                sole_score.weight_for_class(cls)
+                                if sole_score else 1e-4
+                            ),
+                            bounding_box=box,
+                            reliability_weight_at_aggregation=float(
+                                sole_score.weight_for_class(cls)
+                                if sole_score else 1e-4
+                            ),
+                        )
+                        fallback_objects.append(
+                            AggregatedObject(
+                                object_cluster_id=f"{image_id}-fb-{idx}",
+                                accepted_hazard_class=cls,
+                                accepted_severity=sev,
+                                confidence=sole_reliability,
+                                severity_confidence=sole_reliability,
+                                class_posterior_distribution={cls: sole_reliability},
+                                severity_posterior_distribution={sev: 1.0},
+                                fused_bounding_box=box,
+                                spatial_mean_iou_to_median=1.0,
+                                miner_votes=[vote],
+                                escalation_reason=None,
+                                aggregation_method=_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL,
+                            )
+                        )
+                    return {
+                        "score": float(sole_reliability),
+                        "chosen_uid": sole_uid,
+                        "objects": fallback_objects,
+                        "escalation_required": False,
+                        "escalation_reason": None,
+                        "miner_contribution_scores": {sole_uid: 1.0},
+                    }
+            # Fallback disabled or miner below threshold — escalate.
             return {
                 "score": 0.0,
-                "chosen_uid": miner_ids[0] if miner_ids else -1,
+                "chosen_uid": sole_uid,
                 "objects": [],
                 "escalation_required": True,
                 "escalation_reason": "only_one_miner",

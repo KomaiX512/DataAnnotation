@@ -35,9 +35,24 @@ class Validator(BaseValidatorNeuron):
         )
         self.consensus_scorer = ConsensusScorer()
         self.reliability = _ReliabilityAccumulator()
+        # Retrieve draw_boxes and annotated_prefix config values robustly
+        draw_boxes = self.config.get("commercial_draw_boxes")
+        if draw_boxes is None:
+            draw_boxes = getattr(self.config.neuron, "flywheel_commercial_draw_boxes", None)
+        if draw_boxes is None:
+            draw_boxes = True
+
+        annotated_prefix = self.config.get("commercial_annotated_image_prefix")
+        if annotated_prefix is None:
+            annotated_prefix = getattr(self.config.neuron, "flywheel_commercial_annotated_image_prefix", None)
+        if annotated_prefix is None:
+            annotated_prefix = "commercial/annotated-images/"
+
         self.dataset_assembler = DatasetAssembler(
             corpus=self.image_corpus,
             storage_prefix=str(self.config.neuron.flywheel_commercial_dataset_prefix),
+            draw_boxes=draw_boxes,
+            annotated_prefix=str(annotated_prefix),
         )
         self.reward_composer = DualFlywheelRewardComposer(
             alpha=float(self.config.neuron.flywheel_alpha_annotation),
