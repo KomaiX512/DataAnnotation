@@ -1,55 +1,101 @@
 # Validator Setup Guide
 
-This guide covers validator setup from Bittensor install to wallet registration, corpus configuration, and running. It is written as step-by-step CLI instructions.
+This guide covers validator setup from installation to wallet registration,
+corpus configuration, and running. Every command is copy-paste ready.
 
 ## What a validator does
 
-Validators create tasks for miners, score miner responses against a hidden Golden Set, and publish on-chain weights. Accepted annotations are exported into a commercial dataset.
+Validators create annotation tasks for miners, score miner responses against a
+hidden Golden Set, and publish on-chain weights. Accepted annotations are
+aggregated and exported into a commercial dataset.
+
+---
 
 ## Step 0: Install prerequisites
 
 You need Python 3.10+ and Git. Then clone the repo and install dependencies:
 
 ```bash
-git clone https://github.com/KomaiX512/JHA_subnet.git bittensor-subnet-template-1
+git clone https://github.com/KomaiX512/DataAnnotation.git bittensor-subnet-template-1
 cd bittensor-subnet-template-1
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv-neurons
+source .venv-neurons/bin/activate
 pip install -r requirements.txt
 ```
 
-This installs `bittensor` (and `btcli`) from [requirements.txt](requirements.txt).
+This installs `bittensor` 9.7.0 (and all dependencies) from
+[requirements.txt](requirements.txt).
+
+---
 
 ## Step 1: Create a wallet (coldkey + hotkey)
 
-Run the wallet creation flow and follow the prompts:
+### For localnet
+
+```bash
+source .venv-btcli/bin/activate
+
+btcli wallet create \
+  --wallet-name validator \
+  --wallet-path ~/.bittensor/wallets \
+  --hotkey valhk \
+  --n-words 12 \
+  --no-use-password \
+  --overwrite
+```
+
+### For testnet / mainnet
 
 ```bash
 btcli wallet create
 ```
 
-Typical prompt flow:
-
-- Choose to create a new wallet.
+Follow the interactive prompts:
 - Enter a wallet name (this becomes `WALLET_NAME`).
 - Create or select a hotkey (this becomes `WALLET_HOTKEY`).
-- Save your seed words securely.
+- **Save your seed words securely.**
 
-If you already have a wallet, use `btcli wallet list` to confirm the names.
+> [!IMPORTANT]
+> **btcli flag syntax**: btcli 9.x uses `--wallet-name` (dashes) and
+> `--hotkey` (no prefix), **not** `--wallet.name` or `--wallet.hotkey` (dots).
+> The dot-notation is only used by neuron scripts (miner.py, validator.py).
+
+---
 
 ## Step 2: Register the hotkey on the subnet
 
-Register the hotkey for the target subnet:
+### For localnet
+
+Use the helper script (handles token funding and registration):
 
 ```bash
-btcli subnet register \
-	--netuid 1 \
-	--wallet.name <WALLET_NAME> \
-	--wallet.hotkey <WALLET_HOTKEY> \
-	--subtensor.network localnet
+source .venv-neurons/bin/activate
+python scripts/localnet_setup.py --chain-endpoint ws://127.0.0.1:9944
 ```
 
-If your chain is not `localnet`, replace `--subtensor.network` with the correct network name, or pass a chain endpoint with `--subtensor.chain_endpoint ws://host:port`.
+### For testnet
+
+```bash
+source .venv-btcli/bin/activate
+
+btcli subnets register \
+  --netuid <NETUID> \
+  --wallet-name <WALLET_NAME> \
+  --hotkey <WALLET_HOTKEY> \
+  --network wss://test.finney.opentensor.ai:443
+```
+
+### For mainnet
+
+```bash
+btcli subnets register \
+  --netuid <NETUID> \
+  --wallet-name <WALLET_NAME> \
+  --hotkey <WALLET_HOTKEY> \
+  --network wss://entrypoint-finney.opentensor.ai:443
+```
+
+---
 
 ## Step 3: Configure `.env`
 
@@ -59,39 +105,29 @@ Copy the example file and edit it:
 cp .env.example .env
 ```
 
-These fields are required for a validator:
+**Required fields for a validator:**
 
-- `WALLET_NAME` and `WALLET_HOTKEY` (from Step 1)
-- `NETUID` and `SUBTENSOR_NETWORK` (from your chain)
-- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_NAME`
-- Dataset configuration (see Step 4)
-- `VALIDATOR_IMAGE_CACHE_ROOT` (where images are cached)
-- `VALIDATOR_COMMERCIAL_DATASET_PREFIX` (where exports are written)
+| Variable | Description |
+|---|---|
+| `R2_ACCESS_KEY_ID` | Cloudflare R2 access key |
+| `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret key |
+| `R2_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
+| `R2_BUCKET_NAME` | Your R2 bucket name |
+| `VALIDATOR_IMAGE_CACHE_ROOT` | Local path for cached images (must be absolute for `file://` prefix) |
+| `VALIDATOR_COMMERCIAL_DATASET_PREFIX` | Where commercial exports are written |
 
-Path guidance:
-
-- `VALIDATOR_IMAGE_CACHE_ROOT` should be a fast local disk path.
-- `VALIDATOR_COMMERCIAL_DATASET_PREFIX` can be a local folder using `file:///...`.
+---
 
 ## Step 4: Choose your corpus source
 
 You have two options for the Golden Set and annotation pool.
 
-### Option A: Local manifest (recommended for localnet)
+### Option A: Hugging Face datasets (default)
 
-Set a local COCO manifest path:
+If you do **not** set `VALIDATOR_COCO_MANIFEST`, the validator uses Hugging Face
+datasets. In `.env`:
 
-```
-VALIDATOR_COCO_MANIFEST=./artifacts/localnet/coco200/manifest.json
-```
-
-This uses a local split and requires the manifest to exist at that path.
-
-### Option B: Hugging Face datasets
-
-If you do not set `VALIDATOR_COCO_MANIFEST`, the validator uses Hugging Face datasets:
-
-```
+```bash
 VALIDATOR_GOLDEN_DATASET=keremberke/construction-safety-object-detection
 VALIDATOR_GOLDEN_SPLIT=train
 VALIDATOR_GOLDEN_RATIO=0.1
@@ -99,19 +135,140 @@ VALIDATOR_ANNOTATION_SPLIT=train
 VALIDATOR_ANNOTATION_MAX_PER_DATASET=512
 ```
 
-You can adjust dataset IDs and splits as needed. For implementation details, see `template/hazard/image_corpus.py`.
+You can adjust dataset IDs and splits as needed. For implementation details, see
+`template/hazard/image_corpus.py`.
+
+### Option B: Local COCO manifest (recommended for localnet)
+
+Set a local COCO manifest path in `.env`:
+
+```bash
+VALIDATOR_COCO_MANIFEST=./artifacts/localnet/coco200/manifest.json
+```
+
+This uses a local dataset split and requires the manifest to exist at that path.
+
+---
 
 ## Step 5: Run the validator
 
+### Localnet
+
+Open a **dedicated terminal** and get the miner SS58 address first:
+
 ```bash
-source .env
-PYTHONPATH=. python neurons/validator.py
+source .venv-neurons/bin/activate
+python -c "import bittensor as bt; print(bt.wallet(name='miner', hotkey='minerhk').hotkey.ss58_address)"
 ```
 
-The validator will start the main loop, dispatch tasks to miners, score Golden Set accuracy, and export the commercial dataset on a schedule.
+Replace `<MINER_SS58_ADDRESS>` below with the address from above:
+
+```bash
+source .venv-neurons/bin/activate
+source .env
+
+PROJECT_ROOT="$(pwd)"
+
+env PYTHONPATH=. \
+  FORCE_LOCAL_SET_WEIGHTS=1 \
+  DEFAULT_ACCEPT_CONFIDENCE=0.01 \
+  DEFAULT_ACCEPT_SEVERITY_CONFIDENCE=0.01 \
+  DEFAULT_MIN_VOTERS=1 \
+  DEFAULT_MIN_MEAN_IOU_TO_MEDIAN=0.1 \
+  LOCALNET_MINER_PORT_BY_SS58="<MINER_SS58_ADDRESS>=8091" \
+  FALLBACK_SINGLE_MINER_ENABLED=1 \
+  FALLBACK_SINGLE_MINER_MIN_RELIABILITY=0.3 \
+  python neurons/validator.py \
+  --wallet.name validator \
+  --wallet.hotkey valhk \
+  --subtensor.network local \
+  --subtensor.chain_endpoint ws://127.0.0.1:9944 \
+  --netuid 2 \
+  --axon.port 8090 \
+  --neuron.sample_size 3 \
+  --neuron.forward_step_sleep_seconds 15 \
+  --neuron.annotation_timeout 300 \
+  --neuron.flywheel_commercial_export_every 1 \
+  --neuron.flywheel_commercial_dataset_prefix "file://${PROJECT_ROOT}/artifacts/localnet/self_hosted_commercial" \
+  --neuron.flywheel_image_cache_root "${PROJECT_ROOT}/artifacts/localnet/self_hosted_image_cache" \
+  --logging.debug
+```
+
+> [!WARNING]
+> **Absolute paths required!** The `--neuron.flywheel_image_cache_root` and
+> `--neuron.flywheel_commercial_dataset_prefix` must use **absolute paths**.
+> Relative paths cause `ValueError: relative path can't be expressed as a
+> file URI`. Use `PROJECT_ROOT="$(pwd)"` to construct them.
+
+**Key localnet environment variables:**
+
+| Variable | Purpose |
+|---|---|
+| `FORCE_LOCAL_SET_WEIGHTS=1` | Bypasses commit-reveal weight setting |
+| `DEFAULT_ACCEPT_CONFIDENCE=0.01` | Relaxed annotation acceptance threshold |
+| `DEFAULT_MIN_VOTERS=1` | Accept consensus with just 1 miner |
+| `LOCALNET_MINER_PORT_BY_SS58` | Maps miner SS58 addresses to axon ports |
+| `FALLBACK_SINGLE_MINER_ENABLED=1` | Allows single-miner annotation acceptance |
+
+### Testnet
+
+```bash
+source .venv-neurons/bin/activate
+source .env
+
+env PYTHONPATH=. python neurons/validator.py \
+  --wallet.name <WALLET_NAME> \
+  --wallet.hotkey <WALLET_HOTKEY> \
+  --subtensor.network test \
+  --subtensor.chain_endpoint wss://test.finney.opentensor.ai:443 \
+  --netuid <NETUID> \
+  --axon.port 8090 \
+  --logging.debug
+```
+
+### Mainnet
+
+```bash
+source .venv-neurons/bin/activate
+source .env
+
+env PYTHONPATH=. python neurons/validator.py \
+  --wallet.name <WALLET_NAME> \
+  --wallet.hotkey <WALLET_HOTKEY> \
+  --subtensor.network finney \
+  --subtensor.chain_endpoint wss://entrypoint-finney.opentensor.ai:443 \
+  --netuid <NETUID> \
+  --axon.port 8090 \
+  --logging.debug
+```
+
+> [!NOTE]
+> On testnet and mainnet, **do not set** `FORCE_LOCAL_SET_WEIGHTS`,
+> `LOCALNET_MINER_PORT_BY_SS58`, or the relaxed threshold variables.
+> These are localnet-only overrides.
+
+---
 
 ## Step 6: Verify your validator
 
-- Check the logs for `event=evaluator_golden_score_payload` and `event=annotation_flywheel_round_done`.
-- Check the export path for `commercial-dataset.jsonl` and confirm it excludes Golden images.
-- When you see `set_weights on chain successfully!`, your validator is operating normally.
+**Log events to watch for:**
+
+| Event | Meaning |
+|---|---|
+| `event=validator_init mode=annotation_only` | Validator initialized |
+| `event=image_corpus_load_start` | Loading dataset images |
+| `step(N) block(M)` | Main loop is running |
+| `event=evaluator_golden_score_payload` | Scoring miner annotations |
+| `event=annotation_flywheel_round_done` | Annotation round completed |
+| `set_weights on chain successfully!` | Weights published on-chain |
+
+**Check commercial dataset export:**
+```bash
+ls -la artifacts/localnet/self_hosted_commercial/
+cat artifacts/localnet/self_hosted_commercial/commercial-dataset-step-0.jsonl | head -5
+```
+
+Key outputs in the exported JSONL:
+- `image_url` is replaced with a permanent R2 link
+- `objects` array displays aggregated consensus bounding boxes
+- No Golden set images are leaked (filtered out)
