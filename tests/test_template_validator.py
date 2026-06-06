@@ -116,3 +116,25 @@ def test_annotation_item_accepts_float_boxes():
         severity="low",
     )
     assert item.bounding_box[0] == pytest.approx(1.5)
+
+
+def test_broad_softmax_scaling_floor_edge_case():
+    # N=20 eligible miners with floor=0.1, which would make floor * N = 2.0 > 1.0
+    scores = np.ones(20, dtype=float)
+    # Give the first miner a higher score
+    scores[0] = 5.0
+    
+    shaped = broad_softmax_scores(
+        scores,
+        temperature=0.35,
+        floor=0.1,
+        min_score=0.05,
+    )
+    
+    # Assert that the sum is exactly 1.0 (or extremely close)
+    assert abs(float(shaped.sum()) - 1.0) < 1e-6
+    # The first miner must have the highest incentive and not be zeroed out
+    assert shaped[0] > shaped[1]
+    assert shaped[1] == pytest.approx(shaped[-1])
+    assert shaped[0] > 0.0
+    assert (shaped >= 0.0).all()

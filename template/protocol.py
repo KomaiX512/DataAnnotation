@@ -32,6 +32,7 @@ class LabeledTrainingImage(BaseModel):
 
 class ImageAnnotationDocument(BaseModel):
     image_id: str
+    image_url: str = Field(..., min_length=1)
     miner_uid: str
     timestamp: str
     annotations: List[PerImageAnnotationItem]

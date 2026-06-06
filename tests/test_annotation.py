@@ -39,6 +39,7 @@ def test_annotations_file_payload_roundtrip():
         records=[
             ImageAnnotationDocument(
                 image_id="i1",
+                image_url="http://example.com/i1.png",
                 miner_uid="hk",
                 timestamp="2026-05-01T12:00:00Z",
                 annotations=[
@@ -99,6 +100,7 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
 
         return ImageAnnotationDocument(
             image_id=kwargs["image_id"],
+            image_url=kwargs.get("image_url", "http://example.invalid/unl.png"),
             miner_uid=kwargs["miner_uid"],
             timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             annotations=[

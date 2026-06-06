@@ -202,11 +202,13 @@ class ModelTrainingAnnotationEngine:
             # Dropping empty detections silently would cause golden_missing
             # penalties and distort Bayesian fusion voter counts.
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            image_url_map = {spec.image_id: spec.image_url for spec in synapse.annotation_images}
             records: List[ImageAnnotationDocument] = []
             for image_id, anns in annotations_map.items():
                 records.append(
                     ImageAnnotationDocument(
                         image_id=image_id,
+                        image_url=image_url_map.get(image_id, ""),
                         model_version=self._cached_model_version or "pretrained0",
                         miner_uid=miner_hotkey,
                         timestamp=ts,
@@ -222,6 +224,7 @@ class ModelTrainingAnnotationEngine:
                     records.append(
                         ImageAnnotationDocument(
                             image_id=spec.image_id,
+                            image_url=spec.image_url,
                             model_version=self._cached_model_version or "pretrained0",
                             miner_uid=miner_hotkey,
                             timestamp=ts,
