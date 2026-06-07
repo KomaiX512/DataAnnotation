@@ -105,6 +105,24 @@ Copy the example file and edit it:
 cp .env.example .env
 ```
 
+### Subnet Information
+* **Subnet Name**: `DataAnnotation`
+* **Assigned Netuid**: `498`
+* **Repository URL**: `https://github.com/KomaiX512/DataAnnotation.git`
+
+### Shared Validator Bucket Credentials (Localnet Testing)
+For localnet simulation, validators and miners can share the following R2 credentials to ensure every miner has access to the dataset:
+
+```bash
+R2_BUCKET_NAME=subnet
+R2_ACCOUNT_ID=51abf57b5c6f9b6cf2f91cc87e0b9ffe
+R2_S3_ENDPOINT=https://51abf57b5c6f9b6cf2f91cc87e0b9ffe.r2.cloudflarestorage.com
+R2_ENDPOINT_URL=https://51abf57b5c6f9b6cf2f91cc87e0b9ffe.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=6db9f1b555e51d83a73b3d6f0c3a5c26
+R2_SECRET_ACCESS_KEY=1270b967bbd3cc88c65f6d3216e8cf730ea7954b37cb23f867abd57a7ac2f4ba
+R2_PUBLIC_BUCKET_URL=https://pub-3aa7ed152eb9407cb756c8349a5ef02f.r2.dev
+```
+
 **Required fields for a validator:**
 
 | Variable | Description |

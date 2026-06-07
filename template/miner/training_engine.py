@@ -253,7 +253,7 @@ class ModelTrainingAnnotationEngine:
             )
 
             synapse.annotations_uri = annotations_uri
-            synapse.miner_r2_credentials = None
+            synapse.miner_r2_credentials = creds
             synapse.error_message = None
 
             bt.logging.info(

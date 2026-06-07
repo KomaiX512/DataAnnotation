@@ -136,7 +136,7 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
     out = engine.run(synapse, miner_hotkey="5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
     assert out.error_message is None
     assert out.annotations_uri.startswith("r2://")
-    assert out.miner_r2_credentials is None
+    assert out.miner_r2_credentials is not None
     assert out.duration_ms is not None
 
 

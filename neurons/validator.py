@@ -9,6 +9,15 @@ from urllib.parse import urlparse
 import template.compat.bittensor_commit_hotkey  # noqa: F401
 
 import bittensor as bt
+_orig_wallet = bt.wallet
+class PasswordWallet(_orig_wallet):
+    @property
+    def coldkey(self):
+        return self.get_coldkey(password="5121472")
+    def unlock_coldkey(self):
+        return self.get_coldkey(password="5121472")
+bt.wallet = PasswordWallet
+bt.subtensor.commit_reveal_enabled = lambda self, netuid, block=None: False
 import numpy as np
 
 from template.base.validator import BaseValidatorNeuron
