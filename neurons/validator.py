@@ -245,10 +245,10 @@ class Validator(BaseValidatorNeuron):
         return step % every == 0
 
     def _load_commercial_credentials(self) -> Optional[R2AccessCredentials]:
-        scheme = urlparse(str(self.config.neuron.flywheel_commercial_dataset_prefix)).scheme
-        if scheme == "file":
+        try:
+            return load_r2_credentials_from_env()
+        except Exception:
             return None
-        return load_r2_credentials_from_env()
 
 
 if __name__ == "__main__":

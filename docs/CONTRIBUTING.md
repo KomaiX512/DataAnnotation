@@ -49,7 +49,7 @@ python3 scripts/production_readiness_eval.py simulate
 ### 3.1 Strict Subnet Rules
 To maintain the security and integrity of the subnet, any contributions must adhere to these architectural constraints:
 
-1. **No VLM / Text Generation**: All miner nodes run local spatial/classification models (such as YOLO). No reasoning strings, OpenAI/Gemini/Qwen API integrations, or text descriptions are allowed in miner outputs.
+1. **No Textual/Reasoning Outputs**: All miner outputs (`PerImageAnnotationItem`) must contain only spatial/classification labels (bounding boxes and hazard classes). Do not output reasoning strings, descriptions, or text explanations. While miners are allowed to run VLM-based backends (including OpenAI API integrations like `openai_vision`), the final synapse response payload must strictly adhere to the structured bounding box format with no raw text or reasoning.
 2. **Deterministic Severities**: Severity ratings (Low, Medium, High, Critical) are applied purely server-side during the dataset assembly phase via class-to-severity mappings (`template/hazard/image_corpus.py`). Miners do not predict, output, or get evaluated on severity.
 3. **Pristine Schemas**: The communication payload (`PerImageAnnotationItem`) contains only `hazard_class` and `bounding_box`. Do not add OSHA references, confidence fields, or reasoning chains to the miner-validator protocol.
 
