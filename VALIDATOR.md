@@ -47,33 +47,72 @@ btcli wallet create \
 ### For testnet / mainnet
 
 ```bash
-btcli wallet create
+source .venv-btcli/bin/activate
+
+# Create wallet keys (interactive prompts will ask for password/words)
+btcli wallet create \
+  --wallet-name <WALLET_NAME> \
+  --hotkey <WALLET_HOTKEY> \
+  --n-words 12
 ```
 
-Follow the interactive prompts:
-- Enter a wallet name (this becomes `WALLET_NAME`).
-- Create or select a hotkey (this becomes `WALLET_HOTKEY`).
-- **Save your seed words securely.**
-
 > [!IMPORTANT]
-> **btcli flag syntax**: btcli 9.x uses `--wallet-name` (dashes) and
-> `--hotkey` (no prefix), **not** `--wallet.name` or `--wallet.hotkey` (dots).
-> The dot-notation is only used by neuron scripts (miner.py, validator.py).
+> **btcli flag syntax**: btcli uses `--wallet-name` (dashes) and `--hotkey` (no prefix), **not** `--wallet.name` or `--wallet.hotkey` (dots). The dot-notation is only used by neuron scripts (`miner.py`, `validator.py`).
 
 ---
 
-## Step 2: Register the hotkey on the subnet
+## Step 2: Fund and register the hotkey on the subnet
 
-### For localnet
+### Transferring TAO (For Testnet Funding)
+If you need to transfer testnet TAO from an existing wallet to fund your registration:
 
-Use the helper script (handles token funding and registration):
+```bash
+source .venv-btcli/bin/activate
+
+btcli wallet transfer \
+  --wallet-name <SOURCE_WALLET_NAME> \
+  --dest <DESTINATION_COLDKEY_ADDRESS> \
+  --amount <AMOUNT_IN_TAO> \
+  --network test \
+  -y
+```
+
+### Subnet Registration
+
+#### Option A: Localnet Registration (Simulation)
 
 ```bash
 source .venv-neurons/bin/activate
 python scripts/localnet_setup.py --chain-endpoint ws://127.0.0.1:9944
 ```
 
-### For testnet
+#### Option B: Registration via Python Script (Recommended for Testnet/Mainnet)
+In case `btcli` encounters network/compatibility errors:
+
+```bash
+source .venv-neurons/bin/activate
+
+python scripts/register_on_testnet.py \
+  --wallet.name <WALLET_NAME> \
+  --wallet.hotkey <WALLET_HOTKEY> \
+  --subtensor.network test \
+  --netuid 498
+```
+
+#### Option C: Registration via `btcli`
+
+```bash
+source .venv-btcli/bin/activate
+
+btcli subnets register \
+  --netuid 498 \
+  --wallet-name <WALLET_NAME> \
+  --hotkey <WALLET_HOTKEY> \
+  --network test \
+  -y
+```
+
+#### For mainnet
 
 ```bash
 source .venv-btcli/bin/activate
@@ -82,17 +121,8 @@ btcli subnets register \
   --netuid <NETUID> \
   --wallet-name <WALLET_NAME> \
   --hotkey <WALLET_HOTKEY> \
-  --network wss://test.finney.opentensor.ai:443
-```
-
-### For mainnet
-
-```bash
-btcli subnets register \
-  --netuid <NETUID> \
-  --wallet-name <WALLET_NAME> \
-  --hotkey <WALLET_HOTKEY> \
-  --network wss://entrypoint-finney.opentensor.ai:443
+  --network finney \
+  -y
 ```
 
 ---
