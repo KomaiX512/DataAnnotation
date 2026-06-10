@@ -5,8 +5,7 @@ registration, configuration, and running. Every command is copy-paste ready.
 
 ## What a miner does
 
-Miners download unlabeled images, run a vision model to produce bounding boxes
-and class labels, then upload `annotations.json` to R2. Validators score miners
+Miners download unlabeled images, run a vision model to produce bounding boxes, and it could finetune that with golden samples and class labels, then upload `annotations.json` to R2. Validators score miners
 against a hidden Golden Set and reward the best submissions. This subnet is
 model-agnostic: any vision model is supported as long as it can produce the
 required labels.
