@@ -1,148 +1,174 @@
-# Miner Setup Guide
+# Miner Setup Guide — Climate MRV Subnet (Netuid 498, Testnet)
 
-This guide walks through the full miner flow from installation to wallet
-registration, configuration, and running. Every command is copy-paste ready.
+This guide walks you through the **complete miner flow** from a fresh Linux
+machine to a running miner on Bittensor testnet.  Every command is copy-paste
+ready.  No prior Bittensor experience is assumed.
+
+> [!IMPORTANT]
+> **Subnet**: `DataAnnotation` · **Netuid**: `498` · **Network**: `test`
+> **Dataset**: Climate MRV — Sentinel-2 satellite imagery (Phase 1 Testnet)
+> Miners annotate **satellite images** (deforestation, land-cover change, fire
+> scars) rather than the previous construction-safety dataset.
+
+---
 
 ## What a miner does
 
-Miners download unlabeled images, run a vision model to produce bounding boxes, and it could finetune that with golden samples and class labels, then upload `annotations.json` to R2. Validators score miners
-against a hidden Golden Set and reward the best submissions. This subnet is
-model-agnostic: any vision model is supported as long as it can produce the
-required labels.
+1. Receives unlabeled **Sentinel-2 RGB chips** (256×256 px) from the validator
+2. Runs a vision model to classify each chip into one of the Climate MRV land-cover classes:
+   `intact_forest`, `degraded_forest`, `deforestation`, `regrowth`, `plantation`,
+   `wetland`, `water`, `agriculture`, `urban`, `fire_scar`, `bare_land`
+3. Uploads `annotations.json` to the shared Cloudflare R2 bucket
+4. Validator scores the miner against hidden golden samples (Hansen + ESA WorldCover) and publishes on-chain weights
 
 ---
 
 ## Step 0: Install prerequisites
 
-You need Python 3.10+ and Git. Then clone the repo and install dependencies:
+You need **Python 3.10+**, **Git**, and **8 GB+ RAM** (16 GB recommended for local model training).
 
 ```bash
+# Clone the subnet repository
 git clone https://github.com/KomaiX512/DataAnnotation.git bittensor-subnet-template-1
 cd bittensor-subnet-template-1
-python -m venv .venv-neurons
+
+# Create and activate the neurons virtual environment
+python3 -m venv .venv-neurons
 source .venv-neurons/bin/activate
+
+# Install all dependencies
 pip install -r requirements.txt
 ```
 
-This installs `bittensor` 9.7.0 (and all dependencies) from
-[requirements.txt](requirements.txt).
+> [!TIP]
+> If you plan to use the `self_hosted` backend (Path A — recommended), also
+> install the model server dependencies:
+> ```bash
+> pip install ultralytics fastapi uvicorn torch torchvision
+> ```
 
 ---
 
 ## Step 1: Create a wallet (coldkey + hotkey)
 
-### For localnet
-
 ```bash
+# Activate the btcli environment
 source .venv-btcli/bin/activate
 
+# Create wallet — answer the prompts (set a password or press Enter for none)
 btcli wallet create \
   --wallet-name miner \
-  --wallet-path ~/.bittensor/wallets \
   --hotkey minerhk \
-  --n-words 12 \
-  --no-use-password \
-  --overwrite
-```
-
-### For testnet / mainnet
-
-```bash
-source .venv-btcli/bin/activate
-
-# Create wallet keys (interactive prompts will ask for password/words)
-btcli wallet create \
-  --wallet-name <WALLET_NAME> \
-  --hotkey <WALLET_HOTKEY> \
   --n-words 12
+
+# Verify the wallet was created
+btcli wallet list
 ```
 
 > [!IMPORTANT]
-> **btcli flag syntax**: btcli uses `--wallet-name` (dashes) and `--hotkey` (no prefix), **not** `--wallet.name` or `--wallet.hotkey` (dots). The dot-notation is only used by neuron scripts (`miner.py`, `validator.py`).
+> **Save your mnemonic phrase** in a secure location.  You cannot recover your
+> wallet without it.
+>
+> **btcli flag syntax**: btcli uses `--wallet-name` (dashes) and `--hotkey`
+> (no prefix), **not** `--wallet.name` or `--wallet.hotkey` (dots).
+> The dot-notation is only used by neuron scripts (`miner.py`, `validator.py`).
+
+### Check your coldkey address
+
+```bash
+python3 -c "
+import bittensor as bt
+w = bt.wallet(name='miner', hotkey='minerhk')
+print('Coldkey SS58:', w.coldkey.ss58_address)
+print('Hotkey  SS58:', w.hotkey.ss58_address)
+"
+```
 
 ---
 
-## Step 2: Fund and register the hotkey on the subnet
+## Step 2: Fund your wallet with testnet TAO
 
-### Transferring TAO (For Testnet Funding)
-If you need to transfer testnet TAO from an existing wallet to fund your registration:
+You need **~1 TAO** on the coldkey to pay the registration burn cost.
+
+**Option A — Request testnet TAO from faucet:**
+
+Visit the Bittensor Discord → `#faucet` channel and post your **coldkey** SS58 address.
+
+**Option B — Transfer from another funded wallet:**
 
 ```bash
 source .venv-btcli/bin/activate
 
 btcli wallet transfer \
-  --wallet-name <SOURCE_WALLET_NAME> \
-  --dest <DESTINATION_COLDKEY_ADDRESS> \
-  --amount <AMOUNT_IN_TAO> \
+  --wallet-name <SOURCE_WALLET> \
+  --dest <YOUR_MINER_COLDKEY_SS58> \
+  --amount 2 \
   --network test \
   -y
 ```
 
-#### Option A: Localnet Registration (Simulation)
+**Check balance:**
 
 ```bash
-source .venv-neurons/bin/activate
-python scripts/localnet_setup.py --chain-endpoint ws://127.0.0.1:9944
+source .venv-btcli/bin/activate
+
+btcli wallet balance \
+  --wallet-name miner \
+  --network test
 ```
 
-#### Option B: Registration via Python Script (Recommended for Testnet/Mainnet)
-In case `btcli` encounters network/compatibility errors:
+---
+
+## Step 3: Register on subnet 498 (testnet)
+
+### Option A: Python script (most reliable — recommended)
 
 ```bash
 source .venv-neurons/bin/activate
 
 python scripts/register_on_testnet.py \
-  --wallet.name <WALLET_NAME> \
-  --wallet.hotkey <WALLET_HOTKEY> \
+  --wallet.name miner \
+  --wallet.hotkey minerhk \
   --subtensor.network test \
   --netuid 498
 ```
 
-#### Option C: Registration via `btcli`
+### Option B: btcli
 
 ```bash
 source .venv-btcli/bin/activate
 
 btcli subnets register \
   --netuid 498 \
-  --wallet-name <WALLET_NAME> \
-  --hotkey <WALLET_HOTKEY> \
+  --wallet-name miner \
+  --hotkey minerhk \
   --network test \
   -y
 ```
 
-#### For mainnet
+**Verify registration:**
 
 ```bash
 source .venv-btcli/bin/activate
 
-btcli subnets register \
-  --netuid <NETUID> \
-  --wallet-name <WALLET_NAME> \
-  --hotkey <WALLET_HOTKEY> \
-  --network finney \
-  -y
+btcli subnets show --netuid 498 --network test
 ```
+
+You should see your hotkey in the miner list.
 
 ---
 
-## Step 3: Configure `.env`
-
-Copy the example file and edit it:
+## Step 4: Configure `.env`
 
 ```bash
+# Copy the example and edit
 cp .env.example .env
 ```
 
-### Subnet Information
-* **Subnet Name**: `DataAnnotation`
-* **Assigned Netuid**: `498`
-* **Repository URL**: `https://github.com/KomaiX512/DataAnnotation.git`
-
-### Shared Validator Bucket Credentials (Localnet Testing)
-For localnet simulation, validators and miners can share the following R2 credentials to ensure every miner has access to the dataset:
+Open `.env` and set these values:
 
 ```bash
+# ===== R2 STORAGE (shared bucket — contact subnet owner for credentials) =====
 R2_BUCKET_NAME=subnet
 R2_ACCOUNT_ID=51abf57b5c6f9b6cf2f91cc87e0b9ffe
 R2_S3_ENDPOINT=https://51abf57b5c6f9b6cf2f91cc87e0b9ffe.r2.cloudflarestorage.com
@@ -150,55 +176,70 @@ R2_ENDPOINT_URL=https://51abf57b5c6f9b6cf2f91cc87e0b9ffe.r2.cloudflarestorage.co
 R2_ACCESS_KEY_ID=6db9f1b555e51d83a73b3d6f0c3a5c26
 R2_SECRET_ACCESS_KEY=1270b967bbd3cc88c65f6d3216e8cf730ea7954b37cb23f867abd57a7ac2f4ba
 R2_PUBLIC_BUCKET_URL=https://pub-3aa7ed152eb9407cb756c8349a5ef02f.r2.dev
+
+# ===== MINER CONFIG =====
+MINER_MODEL_BACKEND=self_hosted       # or: yolo_local, openai_vision
+MINER_ANNOTATION_WORKSPACE=./artifacts/miner_annotation
+MINER_R2_PREFIX=miners/annotations
 ```
 
-**Required fields for a miner:**
+**Required fields summary:**
 
 | Variable | Description |
 |---|---|
 | `R2_ACCESS_KEY_ID` | Cloudflare R2 access key |
 | `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret key |
 | `R2_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
-| `R2_BUCKET_NAME` | Your R2 bucket name |
-| `MINER_MODEL_BACKEND` | One of: `yolo_local`, `self_hosted`, `openai_vision` |
-| `MINER_ANNOTATION_WORKSPACE` | Where miner writes temporary files (default: `./artifacts/miner_annotation`) |
+| `R2_BUCKET_NAME` | R2 bucket name (shared: `subnet`) |
+| `MINER_MODEL_BACKEND` | `self_hosted` · `yolo_local` · `openai_vision` |
+| `MINER_ANNOTATION_WORKSPACE` | Local scratch directory for downloads |
 
 > [!TIP]
-> For `MINER_ANNOTATION_WORKSPACE`, use a local SSD path with plenty of space.
-> The default `./artifacts/miner_annotation` is fine for most setups.
+> The Climate MRV dataset is served by the **validator** — miners do NOT need
+> to download satellite imagery themselves.  The validator sends image URLs
+> inside each `AnnotationTask` synapse.
 
 ---
 
-## Step 4: Choose a backend and configure it
+## Step 5: Choose a model backend and configure it
 
-Set `MINER_MODEL_BACKEND` in `.env` to one of the options below, then fill
-the matching variables. You can use **any** vision model; examples below
-mention YOLO only as a reference implementation.
+### Path A: `self_hosted` — Local REST API server (Recommended)
 
-### Backend A: `self_hosted`
+This is the most flexible option.  You run a local HTTP server that handles
+`/train` and `/infer` requests.  The reference server uses YOLOv8.
 
-Use your own REST API that implements `/train` and `/infer`. This is the most
-flexible path for any custom vision model.
-
-In `.env`:
-```
+**In `.env`:**
+```bash
 MINER_MODEL_BACKEND=self_hosted
 SELF_HOSTED_TRAIN_URL=http://localhost:8081/train
 SELF_HOSTED_INFER_URL=http://localhost:8081/infer
 ```
 
-Optional: start the reference server (YOLOv8 training and inference):
+**Start the reference server** (keep this terminal open):
 ```bash
 source .venv-neurons/bin/activate
-env PYTHONPATH=. python server.py --host 127.0.0.1 --port 8081 --checkpoint yolov8n.pt
+
+env PYTHONPATH=. python server.py \
+  --host 127.0.0.1 \
+  --port 8081 \
+  --checkpoint yolov8n.pt
 ```
 
-### Backend B: `yolo_local`
-
-Fine-tune a local YOLO model on your GPU.
-
-In `.env`:
+You should see:
 ```
+INFO:     Started server process [xxxxx]
+INFO:     Uvicorn running on http://127.0.0.1:8081
+```
+
+**Test the server is responding:**
+```bash
+curl -s http://127.0.0.1:8081/health | python3 -m json.tool
+```
+
+### Path B: `yolo_local` — GPU fine-tuning (requires NVIDIA GPU)
+
+**In `.env`:**
+```bash
 MINER_MODEL_BACKEND=yolo_local
 YOLO_MODEL_PATH=yolov8n.pt
 YOLO_EPOCHS=10
@@ -206,93 +247,160 @@ YOLO_IMGSZ=640
 YOLO_BATCH=16
 ```
 
-### Backend C: `openai_vision`
+### Path C: `openai_vision` — OpenAI hosted vision model
 
-Use OpenAI fine-tuning for a hosted vision model. **This can incur API costs.**
-
-In `.env`:
-```
+**In `.env`:**
+```bash
 MINER_MODEL_BACKEND=openai_vision
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_MODEL=gpt-4o-2024-08-06
 ```
 
+> [!WARNING]
+> OpenAI Vision can incur significant API costs.  Monitor your usage in the
+> OpenAI dashboard.
+
 ---
 
-## Step 5: Run the miner
+## Step 6: Run the miner (testnet)
 
-### Localnet
-
-```bash
-source .venv-neurons/bin/activate
-source .env
-
-env PYTHONPATH=. MINER_ADVERSARIAL=0 \
-  python neurons/miner.py \
-  --wallet.name miner \
-  --wallet.hotkey minerhk \
-  --subtensor.network local \
-  --subtensor.chain_endpoint ws://127.0.0.1:9944 \
-  --netuid 2 \
-  --miner.model_backend yolo_local \
-  --miner.yolo_pretrained_weights yolov8n.pt \
-  --miner.skip_training \
-  --axon.port 8091 \
-  --logging.debug \
-  --miner.dual_flywheel_r2_prefix localnet/miners/miner1
-```
-
-### Testnet
+Open a **new terminal** (keep the server terminal running if using Path A):
 
 ```bash
 source .venv-neurons/bin/activate
 source .env
 
 env PYTHONPATH=. python neurons/miner.py \
-  --wallet.name <WALLET_NAME> \
-  --wallet.hotkey <WALLET_HOTKEY> \
+  --wallet.name miner \
+  --wallet.hotkey minerhk \
   --subtensor.network test \
   --subtensor.chain_endpoint wss://test.finney.opentensor.ai:443 \
-  --netuid <NETUID> \
-  --miner.model_backend yolo_local \
-  --miner.yolo_pretrained_weights yolov8n.pt \
+  --netuid 498 \
+  --miner.model_backend self_hosted \
+  --miner.self_hosted_infer_url http://localhost:8081/infer \
+  --miner.self_hosted_train_url http://localhost:8081/train \
   --axon.port 8091 \
   --logging.debug
 ```
 
-### Mainnet
+**Expected startup logs:**
+```
+Serving miner axon on port 8091
+Miner running...
+```
+
+### Mainnet (when subnet goes live)
 
 ```bash
-source .venv-neurons/bin/activate
-source .env
-
 env PYTHONPATH=. python neurons/miner.py \
-  --wallet.name <WALLET_NAME> \
-  --wallet.hotkey <WALLET_HOTKEY> \
+  --wallet.name miner \
+  --wallet.hotkey minerhk \
   --subtensor.network finney \
   --subtensor.chain_endpoint wss://entrypoint-finney.opentensor.ai:443 \
-  --netuid <NETUID> \
-  --miner.model_backend yolo_local \
-  --miner.yolo_pretrained_weights yolov8n.pt \
+  --netuid <MAINNET_NETUID> \
+  --miner.model_backend self_hosted \
+  --miner.self_hosted_infer_url http://localhost:8081/infer \
+  --miner.self_hosted_train_url http://localhost:8081/train \
   --axon.port 8091 \
   --logging.debug
 ```
 
 > [!NOTE]
 > **Neuron scripts use dot-notation**: `--wallet.name`, `--wallet.hotkey`,
-> `--subtensor.network`, `--subtensor.chain_endpoint`. This is different from
+> `--subtensor.network`, `--subtensor.chain_endpoint`.  This is different from
 > btcli which uses dash-notation (`--wallet-name`, `--network`).
 
 ---
 
-## Step 6: Verify your miner
+## Step 7: Verify your miner
 
-- **Logs**: Look for `Miner running...` and `Serving miner axon` messages.
-- **R2 bucket**: Check for new `annotations.json` files under your R2 prefix.
-- **Process**: `ps aux | grep miner.py | grep -v grep`
+### Check logs
 
-If nothing uploads, check:
-1. Wallet registration (is the miner registered on the correct netuid?)
-2. R2 credentials (are `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` correct?)
-3. Backend settings (is the model backend configured?)
-4. Validator status (is a validator running and dispatching tasks?)
+**Good signs:**
+```
+event=annotation_engine_infer_done
+event=r2_upload_success
+Miner running...
+```
+
+**Check R2 uploads:**
+```bash
+source .venv-neurons/bin/activate
+
+python3 -c "
+import os, boto3
+s3 = boto3.client('s3',
+    endpoint_url=os.getenv('R2_ENDPOINT_URL'),
+    aws_access_key_id=os.getenv('R2_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('R2_SECRET_ACCESS_KEY'),
+)
+resp = s3.list_objects_v2(Bucket=os.getenv('R2_BUCKET_NAME'), Prefix='miners/annotations/', MaxKeys=10)
+for obj in resp.get('Contents', []):
+    print(obj['Key'], obj['LastModified'])
+"
+```
+
+**Check metagraph status:**
+```bash
+source .venv-btcli/bin/activate
+
+btcli subnets show --netuid 498 --network test
+```
+
+### Troubleshooting checklist
+
+| Symptom | Fix |
+|---|---|
+| Nothing uploads to R2 | Check R2 credentials in `.env`, verify `R2_BUCKET_NAME` |
+| `Not registered` error | Re-run registration script (Step 3) |
+| `Connection refused` (self_hosted) | Start the server in Step 5 |
+| `WalletError: no coldkey found` | Run `btcli wallet list` to verify wallet name |
+| Model backend crash | Check `--miner.model_backend` matches `.env` `MINER_MODEL_BACKEND` |
+| No validator task received | Validator may be offline; wait and check validator logs |
+
+---
+
+## Climate MRV class taxonomy
+
+Miners will receive Sentinel-2 RGB satellite chips and must classify them into
+these land-cover classes:
+
+| Class | Description | Severity |
+|---|---|---|
+| `intact_forest` | Undisturbed primary / secondary forest | None |
+| `degraded_forest` | Canopy intact but visibly disturbed | Low |
+| `deforestation` | Clear-cut / fresh conversion | **Critical** |
+| `regrowth` | Secondary vegetation on cleared land | Low |
+| `plantation` | Commercial monoculture (palm, eucalyptus) | Medium |
+| `wetland` | Mangrove, peatland, seasonal floodplain | Medium |
+| `water` | Rivers, lakes, reservoirs | None |
+| `agriculture` | Cropland / smallholder farms | Low |
+| `urban` | Built-up / impervious surfaces | Medium |
+| `fire_scar` | Post-fire bare / charred area | **High** |
+| `bare_land` | Exposed soil / mining / erosion | Medium |
+| `cloud` | Cloud mask (do not annotate) | None |
+
+---
+
+## Google Earth Engine (GEE) for miners — optional
+
+GEE is **validator-only** by default.  Miners receive image URLs in each task
+and do NOT need a GEE account to participate.  
+
+If you want to run your own data pipeline or download supplementary training
+data, follow the GEE setup in the Validator guide.
+
+---
+
+## R2 Bucket path structure
+
+Each miner writes to its own directory inside the shared bucket:
+
+```
+subnet/
+└── miners/
+    └── annotations/
+        └── <image_id>/
+            ├── annotations.json    ← miner's annotation output
+            └── debug_image.jpg     ← optional annotated image
+```

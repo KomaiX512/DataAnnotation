@@ -53,6 +53,7 @@ _ENV_ARG_MAP = {
     "OPENAI_N_EPOCHS": "--miner.openai_n_epochs",
     "OPENAI_BATCH_SIZE": "--miner.openai_batch_size",
     "OPENAI_LEARNING_RATE_MULTIPLIER": "--miner.openai_learning_rate_multiplier",
+    # Validator dataset configuration
     "VALIDATOR_GOLDEN_DATASET": "--neuron.flywheel_golden_dataset_id",
     "VALIDATOR_GOLDEN_SPLIT": "--neuron.flywheel_golden_split",
     "VALIDATOR_GOLDEN_RATIO": "--neuron.flywheel_golden_ratio",
@@ -61,6 +62,13 @@ _ENV_ARG_MAP = {
     "VALIDATOR_ANNOTATION_SPLIT": "--neuron.flywheel_annotation_split",
     "VALIDATOR_ANNOTATION_MAX_PER_DATASET": "--neuron.flywheel_annotation_max_per_dataset",
     "VALIDATOR_COCO_MANIFEST": "--neuron.flywheel_coco_manifest",
+    # Climate MRV dataset
+    "GEE_PROJECT": "--neuron.climate_mrv_gee_project",
+    "CLIMATE_MRV_N_RAW_CHIPS": "--neuron.climate_mrv_n_raw_chips",
+    "CLIMATE_MRV_N_GOLDEN_CHIPS": "--neuron.climate_mrv_n_golden_chips",
+    "CLIMATE_MRV_FALLBACK_DIR": "--neuron.climate_mrv_fallback_dir",
+    "CLIMATE_MRV_FALLBACK_GOLDEN_MANIFEST": "--neuron.climate_mrv_fallback_golden_manifest",
+    # Validator infra
     "VALIDATOR_IMAGE_CACHE_ROOT": "--neuron.flywheel_image_cache_root",
     "VALIDATOR_IMAGE_SERVING_BASE_URL": "--neuron.flywheel_image_serving_base_url",
     "VALIDATOR_REQUEST_SIZE": "--neuron.flywheel_annotation_request_size",
@@ -580,8 +588,12 @@ def add_validator_args(cls, parser):
     parser.add_argument(
         "--neuron.flywheel_golden_dataset_id",
         type=str,
-        help="Hugging Face dataset id for the golden labeled construction-safety dataset.",
-        default="keremberke/construction-safety-object-detection",
+        help=(
+            "Dataset source for the golden labeled set and annotation pool. "
+            "Use 'climate_mrv' (default) for the Climate MRV Sentinel-2 + Hansen satellite "
+            "imagery pipeline, or any HuggingFace dataset ID for the legacy path."
+        ),
+        default="climate_mrv",
     )
     parser.add_argument(
         "--neuron.flywheel_golden_split",
@@ -600,7 +612,40 @@ def add_validator_args(cls, parser):
         "--neuron.flywheel_golden_split_seed",
         type=int,
         help="Seed used to deterministically split the shared dataset into Golden vs annotation pools.",
-        default=20260509,
+        default=20260601,
+    )
+    parser.add_argument(
+        "--neuron.climate_mrv_gee_project",
+        type=str,
+        help="Google Earth Engine cloud project ID (optional; leave empty for personal auth).",
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.climate_mrv_n_raw_chips",
+        type=int,
+        help="Number of Sentinel-2 annotation-pool chips to sample from GEE per run.",
+        default=200,
+    )
+    parser.add_argument(
+        "--neuron.climate_mrv_n_golden_chips",
+        type=int,
+        help="Number of Hansen/ESA golden chips to export per run (validator-only).",
+        default=60,
+    )
+    parser.add_argument(
+        "--neuron.climate_mrv_fallback_dir",
+        type=str,
+        help=(
+            "Directory containing pre-exported Climate MRV chip files for offline mode. "
+            "Defaults to data/climate_mrv/samples/ in the repo root when empty."
+        ),
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.climate_mrv_fallback_golden_manifest",
+        type=str,
+        help="Path to golden_labels.json for fallback chips. Auto-detected when empty.",
+        default="",
     )
     parser.add_argument(
         "--neuron.flywheel_annotation_dataset_ids",
