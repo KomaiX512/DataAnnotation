@@ -128,14 +128,28 @@ class BenchmarkImage:
 
 @dataclass
 class ImageCorpusConfig:
-    """User-configurable settings for the dual-flywheel image corpus."""
+    """User-configurable settings for the dual-flywheel image corpus.
+
+    **Default dataset (Phase 1 Testnet): Climate MRV**
+    When ``golden_dataset_id`` is ``'climate_mrv'`` (the default), the
+    :mod:`template.hazard.climate_mrv_corpus` loader is used to pull
+    Sentinel-2 imagery and Hansen/ESA golden samples (with automatic GEE
+    fallback to pre-exported chips).  Set ``golden_dataset_id`` to any
+    HuggingFace dataset ID to revert to the legacy HF loading path.
+    """
 
     cache_root: Path
     serving_base_url: str = ""
-    golden_dataset_id: str = "keremberke/construction-safety-object-detection"
+    # ---------------------------------------------------------------
+    # DATASET SOURCE — default is Climate MRV (satellite imagery).
+    # Set to a HuggingFace dataset ID (e.g.
+    # "keremberke/construction-safety-object-detection") to use the
+    # legacy HF loading path instead.
+    # ---------------------------------------------------------------
+    golden_dataset_id: str = "climate_mrv"
     golden_split: str = "train"
     golden_ratio: float = 0.3
-    golden_split_seed: int = 20260509
+    golden_split_seed: int = 20260601
     annotation_dataset_ids: Sequence[str] = field(default_factory=tuple)
     annotation_split: str = "train"
     annotation_max_per_dataset: int = 512
@@ -152,6 +166,15 @@ class ImageCorpusConfig:
     # When set, load Golden + pool from ``scripts/localnet/prepare_coco_val2017_subset.py``
     # manifest instead of HuggingFace (localnet COCO acceptance tests).
     coco_manifest_path: str = ""
+
+    # ---------------------------------------------------------------
+    # Climate MRV specific fields (ignored when golden_dataset_id != 'climate_mrv')
+    # ---------------------------------------------------------------
+    climate_mrv_gee_project: str = ""           # GEE cloud project ID (optional)
+    climate_mrv_n_raw_chips: int = 200          # Sentinel-2 annotation-pool chips per run
+    climate_mrv_n_golden_chips: int = 60        # Hansen/ESA golden chips (validator-only)
+    climate_mrv_fallback_dir: str = ""          # Pre-exported chip directory (offline mode)
+    climate_mrv_fallback_golden_manifest: str = ""  # JSON label manifest for fallback chips
 
     def normalized_annotation_entries(self) -> List[Tuple[str, str]]:
         """Return ``(hub_dataset_id, split)`` for each annotation source.
@@ -204,7 +227,13 @@ class ImageCorpus:
 
     # ------------------------------------------------------------------ API
     def ensure_loaded(self) -> None:
-        """Idempotently materialize all four populations to local disk."""
+        """Idempotently materialize all four populations to local disk.
+
+        Loading priority (first match wins):
+          1. COCO local manifest   (``coco_manifest_path`` is set)
+          2. Climate MRV dataset   (``golden_dataset_id == 'climate_mrv'``)
+          3. HuggingFace datasets  (legacy — any other dataset ID)
+        """
         with self._lock:
             if self._loaded:
                 return
@@ -212,9 +241,20 @@ class ImageCorpus:
             manifest = (self.config.coco_manifest_path or "").strip()
             if manifest:
                 from template.hazard.coco_corpus import load_coco_manifest_into_corpus
-
                 load_coco_manifest_into_corpus(self, Path(manifest))
+            elif (self.config.golden_dataset_id or "").strip().lower() == "climate_mrv":
+                from template.hazard.climate_mrv_corpus import load_climate_mrv_into_corpus
+                bt.logging.info(
+                    "event=image_corpus_mode mode=climate_mrv "
+                    "spec='Climate MRV Subnet Data Sources Specification June 2026'"
+                )
+                load_climate_mrv_into_corpus(self)
             else:
+                # Legacy HuggingFace path (retained for backward compatibility)
+                bt.logging.info(
+                    f"event=image_corpus_mode mode=huggingface "
+                    f"dataset={self.config.golden_dataset_id}"
+                )
                 self._load_golden_and_annotation_pool()
                 self._load_annotation_pool()
                 self._load_benchmark()

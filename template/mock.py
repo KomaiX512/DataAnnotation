@@ -17,13 +17,14 @@ from template.protocol import (
 )
 
 
-def _write_mock_annotations_file(task_id: str, image_ids: list[str]) -> str:
+def _write_mock_annotations_file(task_id: str, annotation_images: list) -> str:
     records = []
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for image_id in image_ids:
+    for img in annotation_images:
         records.append(
             ImageAnnotationDocument(
-                image_id=image_id,
+                image_id=img.image_id,
+                image_url=img.image_url,
                 miner_uid="mock-miner",
                 timestamp=ts,
                 annotations=[
@@ -145,13 +146,12 @@ class MockDendrite:
                 return response.deserialize() if deserialize else response
 
             if isinstance(synapse, AnnotationTask):
-                image_ids = [img.image_id for img in synapse.annotation_images]
-                if not image_ids:
+                if not synapse.annotation_images:
                     response.error_message = "annotation_images must be non-empty."
                 else:
                     response.annotations_uri = _write_mock_annotations_file(
                         synapse.task_id or f"mock-{axon.uid}",
-                        image_ids,
+                        synapse.annotation_images,
                     )
                     response.error_message = None
                     response.duration_ms = 1

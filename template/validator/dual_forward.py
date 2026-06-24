@@ -92,7 +92,7 @@ def _resolve_target_axon(self, uid: int):
     axon = self.metagraph.axons[uid]
     subtensor_cfg = getattr(self.config, "subtensor", None)
     endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
-    if not endpoint.startswith("ws://127.0.0.1"):
+    if not endpoint.startswith("ws://127.0.0.1") and not os.getenv("LOCALNET_MINER_PORT_BY_SS58"):
         return axon
     self_uid = getattr(self, "uid", -1)
     if uid == int(self_uid):

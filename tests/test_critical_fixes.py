@@ -202,6 +202,7 @@ class TestCommercialImageUrlValidation:
         row = {
             "image_id": "abc",
             "image_url": "file:///home/user/image.jpg",
+            "annotated_image_url": "https://pub-xxx.r2.dev/commercial/annotated-images/abc.jpg",
             "width": 640,
             "height": 480,
             "is_golden": False,
@@ -229,6 +230,7 @@ class TestCommercialImageUrlValidation:
         row = {
             "image_id": "abc",
             "image_url": "https://pub-xxx.r2.dev/commercial-images/abc.jpg",
+            "annotated_image_url": "https://pub-xxx.r2.dev/commercial/annotated-images/abc.jpg",
             "width": 640,
             "height": 480,
             "is_golden": False,
@@ -256,6 +258,7 @@ class TestCommercialImageUrlValidation:
         row = {
             "image_id": "abc",
             "image_url": "",
+            "annotated_image_url": "https://pub-xxx.r2.dev/commercial/annotated-images/abc.jpg",
             "width": 640,
             "height": 480,
             "is_golden": False,

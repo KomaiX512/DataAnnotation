@@ -23,7 +23,7 @@ This glossary defines key terms and concepts used across the decentralized annot
 
 ### **G**
 * **Golden Set (Golden Images)**: A secret, curated set of images with highly accurate, human-verified labels. Used by validators as a holdout to measure miner reliability.
-* **Golden holdout ratio**: The fraction of images in an annotation step that are randomly drawn from the Golden Set (defaults to 30%).
+* **Golden holdout ratio**: The fraction of images in an annotation step that are randomly drawn from the Golden Set (defaults to 10%, configured via `--neuron.flywheel_golden_ratio` or environment variable `VALIDATOR_GOLDEN_RATIO`).
 
 ### **I**
 * **Injection Plan**: The step-by-step arrangement of Golden and Unlabeled images sent in a single annotation round.

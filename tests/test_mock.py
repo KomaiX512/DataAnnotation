@@ -31,6 +31,7 @@ async def test_mock_dendrite_returns_annotation_task_response(monkeypatch, tmp_p
         "template.miner.detector_annotate.annotate_image_detector_only",
         lambda **kwargs: ImageAnnotationDocument(
             image_id=kwargs["image_id"],
+            image_url=kwargs.get("image_url", "http://example.com/mock.png"),
             miner_uid=kwargs["miner_uid"],
             timestamp="2026-05-19T00:00:00Z",
             annotations=[

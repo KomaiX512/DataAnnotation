@@ -121,6 +121,7 @@ class AnnotationEngine:
                         checkpoint=self.detector_checkpoint,
                         image_bytes=img_bytes,
                         image_id=spec.image_id,
+                        image_url=spec.image_url,
                         model_version=self.model_version,
                         miner_uid=miner_hotkey,
                     )
@@ -146,7 +147,7 @@ class AnnotationEngine:
             )
 
             synapse.annotations_uri = annotations_uri
-            synapse.miner_r2_credentials = None
+            synapse.miner_r2_credentials = creds
             synapse.error_message = None
         except (URLError, OSError, ValueError, RuntimeError, ImportError) as exc:
             bt.logging.error(f"Annotation task failed {synapse.task_id}: {exc}")

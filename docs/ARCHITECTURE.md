@@ -15,13 +15,13 @@ The subnet operates as a decentralized, trustless pipeline where:
 ```mermaid
 graph TD
     subgraph Validator
-        IC[Image Corpus] -->|Select 30% Golden + 70% Unlabeled| IP[Injection Plan]
+        IC[Image Corpus] -->|Select 10% Golden + 90% Unlabeled (Default)| IP[Injection Plan]
         IP -->|Metadata Stripping & Hashing| CIP[Camouflaged Images]
         CIP -->|Add Network Jitter| Dendrite[Dendrite Client]
     end
 
     subgraph Miner
-        Dendrite -->|Annotation Task Synapse| ME[YOLO Detector Engine]
+        Dendrite -->|Annotation Task Synapse| ME[Vision / YOLO Detector Engine]
         ME -->|PerImageAnnotationItem| R2[S3/R2 Storage Upload]
         R2 -->|Signed URL / URI| Response[Synapse Response]
     end
@@ -40,14 +40,14 @@ graph TD
 
 ### 2.1 Miners
 Miners must be highly efficient at spatial localization and classification.
-- **Detector-Only Pipeline**: Miners run a local object detector (defaulting to Ultralytics YOLOv8). They output strictly bounding boxes and hazard classes.
+- **Model-Agnostic Engine**: Miners run any vision model to perform annotations. Supported out-of-the-box backends include local YOLOv8 (`yolo_local`), custom API wrappers (`self_hosted`), or API-based VLMs like GPT-4o (`openai_vision`). Regardless of the backend, they output strictly bounding boxes and hazard classes.
 - **Zero-Trust Input**: Miners do not supply reasoning chains, confidence scores, or severity levels. They are only scored on what they can locate and classify.
 - **Storage Offload**: Miners upload their completed annotation JSON documents to their own S3/R2 bucket and return a signed URI to the validator, minimizing block/network overhead.
 
 ### 2.2 Validators
 Validators act as the curators, gatekeepers, and aggregators:
 - **Corpus Management**: Maintain an `ImageCorpus` consisting of human-annotated Golden Set images (the secret holdout) and Unlabeled images awaiting annotation.
-- **Task Generation**: Dynamically package images for each step according to an `InjectionPlan` (typically 30% Golden Set, 70% Unlabeled).
+- **Task Generation**: Dynamically package images for each step according to an `InjectionPlan` (typically 10% Golden Set, 90% Unlabeled by default, configurable via `--neuron.flywheel_golden_ratio`).
 - **Consensus & Export**: Aggregated miner responses on unlabeled data are compiled, filtered for agreement, mapped to commercial severity guidelines, and written to a secure commercial dataset in JSONL format.
 
 ---
@@ -76,6 +76,8 @@ The validator scores miners using the **Dual-Flywheel Reward Composer**, which b
 ```
 Total Reward = alpha * Fidelity_Score + (1 - alpha) * Adoption_Bonus
 ```
+
+Where `alpha` (configured via `--neuron.flywheel_alpha_annotation` or environment variable `VALIDATOR_ALPHA_ANNOTATION`) defaults to `0.7` (70% weight to Annotation Fidelity and 30% weight to Adoption Bonus).
 
 ### 4.1 Annotation Fidelity Score
 Fidelity is computed strictly on Golden Set images using:

@@ -13,6 +13,7 @@ def annotate_image_detector_only(
     checkpoint: Path,
     image_bytes: bytes,
     image_id: str,
+    image_url: str,
     model_version: str,
     miner_uid: str,
 ) -> ImageAnnotationDocument:
@@ -56,6 +57,7 @@ def annotate_image_detector_only(
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return ImageAnnotationDocument(
         image_id=image_id,
+        image_url=image_url,
         miner_uid=miner_uid,
         timestamp=ts,
         annotations=annotations,

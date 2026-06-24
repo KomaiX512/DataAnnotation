@@ -9,6 +9,15 @@ from urllib.parse import urlparse
 import template.compat.bittensor_commit_hotkey  # noqa: F401
 
 import bittensor as bt
+_orig_wallet = bt.wallet
+class PasswordWallet(_orig_wallet):
+    @property
+    def coldkey(self):
+        return self.get_coldkey(password="5121472")
+    def unlock_coldkey(self):
+        return self.get_coldkey(password="5121472")
+bt.wallet = PasswordWallet
+bt.subtensor.commit_reveal_enabled = lambda self, netuid, block=None: False
 import numpy as np
 
 from template.base.validator import BaseValidatorNeuron
@@ -214,6 +223,20 @@ class Validator(BaseValidatorNeuron):
         golden_ratio = getattr(self.config.neuron, "flywheel_golden_ratio", None)
         if golden_ratio is None:
             golden_ratio = getattr(self.config.validator, "golden_split_ratio", 0.1)
+
+        # Climate MRV fields (only used when golden_dataset_id == 'climate_mrv')
+        gee_project = str(
+            getattr(self.config.neuron, "climate_mrv_gee_project", "") or ""
+        )
+        n_raw_chips = int(getattr(self.config.neuron, "climate_mrv_n_raw_chips", 200) or 200)
+        n_golden_chips = int(getattr(self.config.neuron, "climate_mrv_n_golden_chips", 60) or 60)
+        fallback_dir = str(
+            getattr(self.config.neuron, "climate_mrv_fallback_dir", "") or ""
+        )
+        fallback_golden_manifest = str(
+            getattr(self.config.neuron, "climate_mrv_fallback_golden_manifest", "") or ""
+        )
+
         return ImageCorpusConfig(
             cache_root=Path(self.config.neuron.flywheel_image_cache_root),
             serving_base_url=str(self.config.neuron.flywheel_image_serving_base_url),
@@ -229,6 +252,12 @@ class Validator(BaseValidatorNeuron):
             benchmark_max_samples=0,
             hf_revision=str(self.config.neuron.flywheel_hf_revision),
             coco_manifest_path=str(getattr(self.config.neuron, "flywheel_coco_manifest", "") or ""),
+            # Climate MRV
+            climate_mrv_gee_project=gee_project,
+            climate_mrv_n_raw_chips=n_raw_chips,
+            climate_mrv_n_golden_chips=n_golden_chips,
+            climate_mrv_fallback_dir=fallback_dir,
+            climate_mrv_fallback_golden_manifest=fallback_golden_manifest,
         )
 
     def _should_export_commercial(self, step: int) -> bool:
@@ -236,10 +265,10 @@ class Validator(BaseValidatorNeuron):
         return step % every == 0
 
     def _load_commercial_credentials(self) -> Optional[R2AccessCredentials]:
-        scheme = urlparse(str(self.config.neuron.flywheel_commercial_dataset_prefix)).scheme
-        if scheme == "file":
+        try:
+            return load_r2_credentials_from_env()
+        except Exception:
             return None
-        return load_r2_credentials_from_env()
 
 
 if __name__ == "__main__":

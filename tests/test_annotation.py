@@ -39,6 +39,7 @@ def test_annotations_file_payload_roundtrip():
         records=[
             ImageAnnotationDocument(
                 image_id="i1",
+                image_url="http://example.com/i1.png",
                 miner_uid="hk",
                 timestamp="2026-05-01T12:00:00Z",
                 annotations=[
@@ -99,6 +100,7 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
 
         return ImageAnnotationDocument(
             image_id=kwargs["image_id"],
+            image_url=kwargs.get("image_url", "http://example.invalid/unl.png"),
             miner_uid=kwargs["miner_uid"],
             timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             annotations=[
@@ -134,7 +136,7 @@ def test_annotation_engine_uploads_annotations(tmp_path: Path, monkeypatch: pyte
     out = engine.run(synapse, miner_hotkey="5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
     assert out.error_message is None
     assert out.annotations_uri.startswith("r2://")
-    assert out.miner_r2_credentials is None
+    assert out.miner_r2_credentials is not None
     assert out.duration_ms is not None
 
 
