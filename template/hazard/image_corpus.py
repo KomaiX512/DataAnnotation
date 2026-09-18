@@ -214,7 +214,7 @@ class ImageCorpus:
 
     def __init__(self, config: ImageCorpusConfig):
         self.config = config
-        self.cache_root = Path(config.cache_root)
+        self.cache_root = Path(config.cache_root).resolve()
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._loaded = False

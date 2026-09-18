@@ -177,13 +177,13 @@ R2_SECRET_ACCESS_KEY=1270b967bbd3cc88c65f6d3216e8cf730ea7954b37cb23f867abd57a7ac
 VALIDATOR_GOLDEN_DATASET=climate_mrv
 VALIDATOR_GOLDEN_RATIO=0.30
 VALIDATOR_GOLDEN_SPLIT_SEED=20260601
-CLIMATE_MRV_N_RAW_CHIPS=200
-CLIMATE_MRV_N_GOLDEN_CHIPS=60
+CLIMATE_MRV_N_RAW_CHIPS=300
+CLIMATE_MRV_N_GOLDEN_CHIPS=100
 
 # ===== VALIDATOR INFRA =====
 VALIDATOR_IMAGE_CACHE_ROOT=./data/flywheel/image_cache
-VALIDATOR_COMMERCIAL_DATASET_PREFIX=file:///home/komail/bittensor-subnet-template-1/artifacts/commercial_dataset
-VALIDATOR_COMMERCIAL_EXPORT_EVERY=10
+VALIDATOR_COMMERCIAL_DATASET_PREFIX=file:///home/komail/DataAnnotation/artifacts/commercial_dataset
+VALIDATOR_COMMERCIAL_EXPORT_EVERY=1
 ```
 
 **Required fields for a validator:**
@@ -198,16 +198,26 @@ VALIDATOR_COMMERCIAL_EXPORT_EVERY=10
 | `VALIDATOR_IMAGE_CACHE_ROOT` | Local path for cached satellite image chips |
 | `VALIDATOR_COMMERCIAL_DATASET_PREFIX` | Where commercial exports are written |
 
+> [!NOTE]
+> **Default Testing Dataset in Cloudflare R2**:
+> A pre-annotated 400-image satellite dataset is available directly in the Cloudflare R2 `subnet` bucket under `dataset/`:
+> - `dataset/golden/` (100 satellite chips: `climate_tree_000.jpg` to `099.jpg`)
+> - `dataset/golden_labels.json` (Ground truth bounding box annotations for tree crowns)
+> - `dataset/raw/` (300 raw Sentinel-2 satellite chips: `climate_raw_000.jpg` to `299.jpg`)
+> - `dataset/training_pool/` (30 chips with ground-truth labels for miner zero-shot tuning)
+>
+> Leave `R2_PUBLIC_BUCKET_URL` commented out in `.env`. The validator and miner automatically generate and consume authenticated S3 presigned URLs, ensuring seamless image downloads without requiring a custom public domain.
+
 ---
 
-## Step 4: Set up Google Earth Engine (GEE)
+## Step 4: Set up Google Earth Engine (GEE) or Use Offline Fallback
 
 The Climate MRV validator uses GEE to stream Sentinel-2 imagery and golden
 reference data from Hansen/JRC/ESA datasets.
 
-### 4a. Authenticate with GEE
+### 4a. Authenticate with GEE (Optional for Testnet)
 
-**Personal account (recommended for testnet):**
+**Personal account:**
 
 ```bash
 source .venv-neurons/bin/activate
@@ -216,49 +226,19 @@ source .venv-neurons/bin/activate
 python3 -c "import ee; ee.Authenticate()"
 ```
 
-Follow the browser prompt → copy the authentication code → paste it back in
-the terminal.
+### 4b. Pre-Packaged Offline Fallback (Default for Testnet 498)
 
-**Verify authentication works:**
-```bash
-python3 -c "
-import ee
-ee.Initialize()
-print('GEE authenticated OK')
-info = ee.Image('UMD/hansen/global_forest_change_2023_v1_11').getInfo()
-print('Hansen dataset accessible:', info['id'])
-"
-```
-
-### 4b. Service account (production / cloud VM)
-
-```bash
-# Set GEE_PROJECT in .env if using a cloud project
-echo "GEE_PROJECT=my-gcp-project-id" >> .env
-```
-
-### 4c. Offline fallback (no GEE)
-
-If you cannot authenticate with GEE, the validator automatically falls back
-to pre-exported sample chips in `data/climate_mrv/samples/`.
-
-**Download sample chips for offline use:**
-```bash
-source .venv-neurons/bin/activate
-
-python3 -m template.hazard.climate_mrv_corpus \
-  --output-dir data/climate_mrv/samples \
-  --n-chips 50
-```
+If GEE authentication is omitted, the validator automatically falls back
+to the pre-exported 400-image satellite dataset stored in `data/climate_mrv/samples/`
+and on Cloudflare R2:
+- 100 Golden chips (`climate_tree_000.jpg` to `099.jpg`) with ground-truth bounding boxes (`golden_labels.json`)
+- 300 Raw Sentinel-2 chips (`climate_raw_000.jpg` to `299.jpg`)
+- 30 Training pool chips for miner feedback
 
 Set in `.env`:
 ```bash
 CLIMATE_MRV_FALLBACK_DIR=data/climate_mrv/samples
 ```
-
-> [!WARNING]
-> The fallback chip set is a minimal placeholder.  For accurate scoring and
-> mainnet deployment, live GEE access is required.
 
 ---
 
@@ -269,7 +249,7 @@ source .venv-neurons/bin/activate
 
 PROJECT_ROOT="$(pwd)"
 
-env PYTHONPATH=. python neurons/validator.py \
+python neurons/validator.py \
   --wallet.name validator \
   --wallet.hotkey valhk \
   --subtensor.network test \
@@ -278,9 +258,11 @@ env PYTHONPATH=. python neurons/validator.py \
   --axon.port 8090 \
   --neuron.flywheel_golden_dataset_id climate_mrv \
   --neuron.flywheel_golden_ratio 0.30 \
+  --neuron.flywheel_annotation_request_size 20 \
+  --neuron.flywheel_golden_injection_per_request 5 \
   --neuron.flywheel_image_cache_root "${PROJECT_ROOT}/data/flywheel/image_cache" \
   --neuron.flywheel_commercial_dataset_prefix "file://${PROJECT_ROOT}/artifacts/commercial_dataset" \
-  --neuron.flywheel_commercial_export_every 10 \
+  --neuron.flywheel_commercial_export_every 1 \
   --neuron.annotation_timeout 120 \
   --logging.debug
 ```

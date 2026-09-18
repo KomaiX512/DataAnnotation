@@ -88,26 +88,37 @@ def _isoformat_utc() -> str:
 
 
 def _resolve_target_axon(self, uid: int):
-    """Localnet-aware axon resolver mirroring legacy forward."""
+    """Localnet/testnet-aware axon resolver."""
     axon = self.metagraph.axons[uid]
-    subtensor_cfg = getattr(self.config, "subtensor", None)
-    endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
-    if not endpoint.startswith("ws://127.0.0.1") and not os.getenv("LOCALNET_MINER_PORT_BY_SS58"):
-        return axon
     self_uid = getattr(self, "uid", -1)
     if uid == int(self_uid):
         return axon
+    subtensor_cfg = getattr(self.config, "subtensor", None)
+    endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
+    chain_port = int(getattr(axon, "port", 0) or 0)
+    chain_ip = str(getattr(axon, "ip", "") or "")
+
+    has_valid_chain_axon = chain_port > 0 and chain_ip not in ("0", "0.0.0.0", "")
+    has_local_override = bool(
+        os.getenv("LOCALNET_MINER_PORT_BY_SS58")
+        or os.getenv("LOCALNET_MINER_PORT")
+        or endpoint.startswith("ws://127.0.0.1")
+    )
+
+    if has_valid_chain_axon and not has_local_override:
+        return axon
+
     patched = copy.deepcopy(axon)
     patched.ip = "127.0.0.1"
     hk = self.metagraph.hotkeys[uid]
     port_override = localnet_miner_port_override(hk)
     if port_override is not None:
         patched.port = int(port_override)
-    elif int(getattr(patched, "port", 0) or 0) == 0:
+    elif chain_port == 0 or has_local_override:
         patched.port = int(os.getenv("LOCALNET_MINER_PORT", "8091"))
     bt.logging.debug(
-        f"Localnet annotation_flywheel axon uid={uid} hotkey={hk[:16]}... "
-        f"chain_port={getattr(axon, 'port', None)} patched_port={patched.port}"
+        f"Resolved axon uid={uid} hotkey={hk[:16]}... "
+        f"chain_port={chain_port} chain_ip={chain_ip} -> target_port={patched.port} target_ip={patched.ip}"
     )
     return patched
 

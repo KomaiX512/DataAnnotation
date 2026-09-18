@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 #: Canonical label set exposed to miners via the AnnotationTask synapse.
 CLIMATE_MRV_CLASSES: List[str] = [
+    "individual_tree",        # Single visible tree crown
+    "group_of_trees",         # Clustered tree crowns
+    "tree",                   # General tree entity
     "intact_forest",          # Continuous, undisturbed primary/secondary forest
     "degraded_forest",        # Forest with visible disturbance but canopy intact
     "deforestation",          # Clear-cut / land-use conversion (fresh)
@@ -76,6 +79,9 @@ CLIMATE_MRV_CLASSES: List[str] = [
 
 #: Severity mapping for golden-set evaluation consistency.
 _CLASS_SEVERITY: Dict[str, str] = {
+    "individual_tree":  "none",
+    "group_of_trees":   "none",
+    "tree":             "none",
     "intact_forest":    "none",
     "degraded_forest":  "low",
     "deforestation":    "critical",
@@ -411,9 +417,11 @@ def _load_from_fallback_chips(
     """
     chips_dir = Path(cfg.fallback_chips_dir) if cfg.fallback_chips_dir else _bundled_samples_dir()
 
-    raw_dir    = chips_dir / "raw"
-    golden_dir = chips_dir / "golden"
-    labels_path = chips_dir / "golden_labels.json"
+    raw_dir         = chips_dir / "raw"
+    golden_dir      = chips_dir / "golden"
+    train_pool_dir  = chips_dir / "training_pool"
+    labels_path     = chips_dir / "golden_labels.json"
+    train_pool_labels_path = chips_dir / "training_pool_labels.json"
 
     golden_labels: Dict[str, dict] = {}
     if labels_path.exists():
@@ -421,6 +429,13 @@ def _load_from_fallback_chips(
             golden_labels = json.loads(labels_path.read_text(encoding="utf-8"))
         except Exception as exc:
             bt.logging.warning(f"event=climate_mrv_golden_labels_load_failed reason={exc}")
+
+    train_pool_labels: Dict[str, dict] = {}
+    if train_pool_labels_path.exists():
+        try:
+            train_pool_labels = json.loads(train_pool_labels_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            bt.logging.warning(f"event=climate_mrv_train_pool_labels_load_failed reason={exc}")
 
     # --- Load raw annotation-pool chips ---
     loaded_raw = 0
@@ -457,7 +472,22 @@ def _load_from_fallback_chips(
             ).strip().lower()
             if mrv_class not in CLIMATE_MRV_CLASSES:
                 mrv_class = "intact_forest"
-            _register_golden_chip(corpus, chip_bytes, mrv_class, cfg, lon=0.0, lat=0.0)
+
+            raw_anns = label_info.get("annotations")
+            golden_anns = None
+            if raw_anns and isinstance(raw_anns, list):
+                golden_anns = []
+                for ann in raw_anns:
+                    h_class = str(ann.get("hazard_class") or mrv_class).strip()
+                    bbox = tuple(ann.get("bounding_box", [0, 0, 1024, 1024]))
+                    golden_anns.append(
+                        GoldenAnnotation(
+                            hazard_class=h_class,
+                            bounding_box=bbox,
+                            severity=severity_for_mrv_class(h_class),
+                        )
+                    )
+            _register_golden_chip(corpus, chip_bytes, mrv_class, cfg, lon=0.0, lat=0.0, annotations=golden_anns)
             loaded_golden += 1
 
     if loaded_golden == 0:
@@ -467,6 +497,43 @@ def _load_from_fallback_chips(
             "note='populate data/climate_mrv/samples/golden/ with labeled chips for production'"
         )
         _inject_synthetic_placeholder_chips(corpus, cfg, n=10, labeled=True)
+
+    # --- Load public training pool chips ---
+    if train_pool_dir.exists():
+        for chip_path in sorted(train_pool_dir.glob("**/*.*")):
+            if chip_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+                continue
+            chip_bytes = _read_image_as_jpeg(chip_path)
+            if chip_bytes is None:
+                continue
+            label_info = train_pool_labels.get(chip_path.name) or {}
+            mrv_class = str(label_info.get("class") or "intact_forest").strip().lower()
+            raw_anns = label_info.get("annotations")
+            tp_anns = []
+            if raw_anns and isinstance(raw_anns, list):
+                for ann in raw_anns:
+                    h_class = str(ann.get("hazard_class") or mrv_class).strip()
+                    bbox = tuple(ann.get("bounding_box", [0, 0, 1024, 1024]))
+                    tp_anns.append(
+                        GoldenAnnotation(
+                            hazard_class=h_class,
+                            bounding_box=bbox,
+                            severity=severity_for_mrv_class(h_class),
+                        )
+                    )
+            image_id = hashlib.sha256(chip_bytes).hexdigest()
+            cached_path = corpus._materialize_image(image_id, "jpg", chip_bytes)
+            width, height = _image_size(chip_bytes)
+            tp_img = GoldenImage(
+                image_id=image_id,
+                image_path=cached_path,
+                image_url=corpus._image_url(cached_path),
+                width=width,
+                height=height,
+                annotations=tuple(tp_anns),
+            )
+            corpus._training_pool.append(tp_img)
+            corpus._all_image_index[image_id] = cached_path
 
 
 def _bundled_samples_dir() -> Path:
@@ -574,27 +641,31 @@ def _register_golden_chip(
     cfg: ClimateMRVConfig,
     lon: float,
     lat: float,
+    annotations: Optional[Sequence[GoldenAnnotation]] = None,
 ) -> None:
-    """Cache chip bytes and add to the Golden Set with a full-image bounding box."""
+    """Cache chip bytes and add to the Golden Set with fine-grained bounding boxes."""
     image_id = hashlib.sha256(chip_bytes).hexdigest()
     if image_id in corpus._golden_index:
         return
 
     cached_path = corpus._materialize_image(image_id, "jpg", chip_bytes)
     width, height = _image_size(chip_bytes)
-    severity = severity_for_mrv_class(mrv_class)
-    annotation = GoldenAnnotation(
-        hazard_class=mrv_class,
-        bounding_box=(0, 0, width, height),   # whole-chip bounding box
-        severity=severity,
-    )
+    if not annotations:
+        severity = severity_for_mrv_class(mrv_class)
+        annotations = (
+            GoldenAnnotation(
+                hazard_class=mrv_class,
+                bounding_box=(0, 0, width, height),   # whole-chip bounding box
+                severity=severity,
+            ),
+        )
     golden = GoldenImage(
         image_id=image_id,
         image_path=cached_path,
         image_url=corpus._image_url(cached_path),
         width=width,
         height=height,
-        annotations=(annotation,),
+        annotations=tuple(annotations),
     )
     corpus._golden.append(golden)
     corpus._golden_index[image_id] = golden

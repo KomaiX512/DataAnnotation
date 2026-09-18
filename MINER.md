@@ -252,24 +252,43 @@ SELF_HOSTED_INFER_URL=http://localhost:8081/infer
 
 ### Path A: `self_hosted` — Local REST API server (Recommended)
 
-This is the most flexible option.  You run a local HTTP server that handles
-`/train` and `/infer` requests.  The reference server uses YOLOv8.
+This is the most flexible option. You run a local HTTP server that handles `/train` and `/infer` requests. The reference server uses YOLOv8.
 
-**In `.env`:**
+**1. Download the Satellite Tree Detection Model Checkpoint:**
+
+To achieve high fidelity on the Climate MRV satellite imagery dataset (detecting tree crowns and forest clusters), download the specialized YOLOv8 tree detection model into `models/`:
+
+```bash
+source .venv-neurons/bin/activate
+
+# Create models directory and download checkpoint from HuggingFace
+mkdir -p models
+python -c "
+from huggingface_hub import hf_hub_download
+import os, shutil
+
+path = hf_hub_download(repo_id='solafune/tree-detection', filename='best.pt', local_dir='models')
+if os.path.exists('models/best.pt'):
+    shutil.move('models/best.pt', 'models/tree_detection.pt')
+print('Tree detection model ready at models/tree_detection.pt')
+"
+```
+
+**2. Configure `.env`:**
 ```bash
 MINER_MODEL_BACKEND=self_hosted
 SELF_HOSTED_TRAIN_URL=http://localhost:8081/train
 SELF_HOSTED_INFER_URL=http://localhost:8081/infer
 ```
 
-**Start the reference server** (keep this terminal open):
+**3. Start the reference model server** (keep this terminal open):
 ```bash
 source .venv-neurons/bin/activate
 
-env PYTHONPATH=. python server.py \
+python server.py \
   --host 127.0.0.1 \
   --port 8081 \
-  --checkpoint yolov8n.pt
+  --checkpoint models/tree_detection.pt
 ```
 
 You should see:
@@ -279,7 +298,7 @@ You should see:
 ============================================================
   Host:       127.0.0.1
   Port:       8081
-  Checkpoint: yolov8n.pt
+  Checkpoint: models/tree_detection.pt
   YOLO avail: True
   PIL avail:  True
 ```
@@ -475,6 +494,9 @@ these land-cover classes:
 
 | Class | Description | Severity |
 |---|---|---|
+| `individual_tree` | Single canopy tree detection | None |
+| `group_of_trees` | Cluster of multiple contiguous trees | None |
+| `tree` | Tree synonym mapping | None |
 | `intact_forest` | Undisturbed primary / secondary forest | None |
 | `degraded_forest` | Canopy intact but visibly disturbed | Low |
 | `deforestation` | Clear-cut / fresh conversion | **Critical** |

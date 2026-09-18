@@ -130,9 +130,10 @@ class AnnotationFidelityScorer:
         class_avg = sum(per_match_class) / n_gt
 
         hallucinated = max(0, len(miner_items) - len(used_miner_idx))
-        # Each hallucination compresses score multiplicatively.
+        # Penalty normalized by relative over-detection ratio so dense satellite scenes with dozens of crowns are not zeroed out.
+        rel_hallucinated = hallucinated / n_gt
         penalty = (
-            self.hallucination_penalty ** hallucinated
+            self.hallucination_penalty ** rel_hallucinated
             if hallucinated > 0
             else 1.0
         )
@@ -159,7 +160,12 @@ def _class_match_score(
 ) -> float:
     miner_class = (item.hazard_class or "").lower().strip()
     gt_class = (gt.hazard_class or "").lower().strip()
-    return 1.0 if miner_class and miner_class == gt_class else 0.0
+    if miner_class and miner_class == gt_class:
+        return 1.0
+    tree_synonyms = {"tree", "individual_tree", "group_of_trees", "intact_forest"}
+    if miner_class in tree_synonyms and gt_class in tree_synonyms:
+        return 0.95
+    return 0.0
 
 
 # ---------------------------------------------------------------------------

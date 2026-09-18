@@ -18,6 +18,14 @@ def check_uid_availability(
     Returns:
         bool: True if uid is available, False otherwise
     """
+    target_ss58 = os.getenv("LOCALNET_TARGET_MINER_SS58", "").strip()
+    if target_ss58 and uid < len(metagraph.hotkeys) and metagraph.hotkeys[uid] == target_ss58:
+        return True
+    if os.getenv("ALLOW_NON_SERVING_MINER", "").strip().lower() in ("1", "true", "yes"):
+        if uid < len(metagraph.validator_permit) and metagraph.validator_permit[uid]:
+            if metagraph.S[uid] > vpermit_tao_limit:
+                return False
+        return True
     # Filter non serving axons.
     if not metagraph.axons[uid].is_serving:
         return False
