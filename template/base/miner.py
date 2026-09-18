@@ -112,10 +112,14 @@ class BaseMinerNeuron(BaseNeuron):
         bt.logging.info(
             f"Serving miner axon {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
         )
-        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+        try:
+            self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+        except Exception as e:
+            bt.logging.error(f"Failed to serve Axon with exception: {e}")
 
         # Start  starts the miner's axon, making it active on the network.
         self.axon.start()
+
 
         bt.logging.info(f"Miner starting at block: {self.block}")
 

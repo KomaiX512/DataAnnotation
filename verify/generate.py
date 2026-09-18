@@ -1,14 +1,16 @@
+import os
 from datetime import datetime
 
 import bittensor
 
-# Hardcode or set the environment variable WALLET_PASS to the password for the wallet
-# environ["WALLET_PASS"] = ""
-
 
 def main(args):
     wallet = bittensor.Wallet(name=args.name)
-    keypair = wallet.coldkey
+    password = getattr(args, "password", None) or os.environ.get("WALLET_PASS")
+    if password:
+        keypair = wallet.get_coldkey(password=password)
+    else:
+        keypair = wallet.coldkey
 
     timestamp = datetime.now()
     timezone = timestamp.astimezone().tzname()
@@ -32,6 +34,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate a signature")
     parser.add_argument("--message", help="The message to sign", type=str)
     parser.add_argument("--name", help="The wallet name", type=str)
+    parser.add_argument("--password", help="The wallet password", type=str, default=None)
     args = parser.parse_args()
 
     main(args)
+

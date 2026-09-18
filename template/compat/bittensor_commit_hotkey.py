@@ -90,3 +90,64 @@ import sys
 _subtensor_mod = sys.modules.get("bittensor.core.subtensor")
 if _subtensor_mod is not None:
     _subtensor_mod.commit_reveal_v3_extrinsic = _commit_reveal_v3_extrinsic_with_hotkey
+
+# --- Subtensor scale-decoding & parameter patch for Bittensor 9.7+ on Testnet ---
+try:
+    from async_substrate_interface.sync_substrate import SubstrateInterface, ScaleObj, hex_to_bytes
+
+    def _clean_scale_decoded(obj):
+        if isinstance(obj, tuple):
+            if len(obj) == 1 and isinstance(obj[0], (int, float, str, bool)):
+                return obj[0]
+            return tuple(_clean_scale_decoded(x) for x in obj)
+        if isinstance(obj, list):
+            return [_clean_scale_decoded(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _clean_scale_decoded(v) for k, v in obj.items()}
+        return obj
+
+    _orig_runtime_call = SubstrateInterface.runtime_call
+
+    def _patched_runtime_call(self, api, method, params=None, block_hash=None):
+        try:
+            res = _orig_runtime_call(self, api, method, params, block_hash)
+            if hasattr(res, "value") and res.value is not None:
+                res.value = _clean_scale_decoded(res.value)
+            return res
+        except ValueError as val_err:
+            if "Invalid type" not in str(val_err):
+                raise
+
+        runtime = self.init_runtime(block_hash=block_hash)
+        if params is None:
+            params = []
+        metadata_v15_value = runtime.metadata_v15.value()
+        apis = {entry["name"]: entry for entry in metadata_v15_value["apis"]}
+        api_entry = apis[api]
+        methods = {entry["name"]: entry for entry in api_entry["methods"]}
+        runtime_call_def = methods[method]
+
+        param_data = b""
+        for idx, param in enumerate(runtime_call_def["inputs"]):
+            param_type_string = f"scale_info::{param['ty']}"
+            val = params[idx] if isinstance(params, list) else params[param["name"]]
+            try:
+                param_data += self.encode_scale(param_type_string, val, runtime=runtime)
+            except Exception:
+                param_data += self.encode_scale(param_type_string, [val], runtime=runtime)
+
+        result_data = self.rpc_request(
+            "state_call", [f"{api}_{method}", param_data.hex(), block_hash]
+        )
+        output_type_string = f"scale_info::{runtime_call_def['output']}"
+        result_bytes = hex_to_bytes(result_data["result"])
+        result_obj = ScaleObj(self.decode_scale(output_type_string, result_bytes))
+        if hasattr(result_obj, "value") and result_obj.value is not None:
+            result_obj.value = _clean_scale_decoded(result_obj.value)
+        return result_obj
+
+    SubstrateInterface.runtime_call = _patched_runtime_call
+except Exception:
+    pass
+
+

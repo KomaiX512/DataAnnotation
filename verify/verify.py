@@ -1,6 +1,10 @@
 from binascii import unhexlify
 
-from substrateinterface import Keypair
+try:
+    from substrateinterface import Keypair
+except ImportError:
+    from bittensor_wallet import Keypair
+
 
 
 def main(args):
