@@ -597,7 +597,7 @@ class DatasetAssembler:
         """Upload a single image to R2 for inclusion in the commercial dataset.
 
         Returns a public HTTP(S) URL, or empty string if the image can't be found.
-        Images are uploaded under ``commercial-images/<image_id>.<ext>`` and are
+        Images are uploaded under ``commercial/images/<image_id>.<ext>`` and are
         idempotent — re-uploading the same image_id is a no-op at the R2 level
         (same key overwrites with identical content).
         """
@@ -611,7 +611,7 @@ class DatasetAssembler:
         try:
             from template.hazard.r2_storage import upload_image_to_r2
 
-            object_key = f"commercial-images/{image_id}{image_path.suffix}"
+            object_key = f"commercial/images/{image_id}{image_path.suffix}"
             url = upload_image_to_r2(
                 image_path, object_key=object_key, creds=creds
             )
