@@ -11,25 +11,24 @@ a running validator on Bittensor testnet.  Every command is copy-paste ready.
 
 ## What a validator does
 
-1. **Loads the Climate MRV corpus** — downloads Sentinel-2 RGB chips from
-   Google Earth Engine (GEE) and labels them against Hansen Global Forest
-   Change / ESA WorldCover golden samples
-2. **Builds a Golden Set** (validator-only; never served raw to miners)
-3. **Dispatches AnnotationTasks** to miners — serves unlabeled Sentinel-2 chips
-4. **Scores miner responses** against the Golden Set
-5. **Exports commercial annotations** to Cloudflare R2
-6. **Publishes on-chain weights** every epoch
+1. **Loads the Climate MRV corpus** — loads 500 Sentinel-2 RGB satellite chips from `data/climate_mrv/samples/raw/` (or GEE streaming).
+2. **Maintains Secret Golden Ground Truth** (Strictly Local) — loads 100 private ground-truth chips from `data/climate_mrv/samples/golden/` with exact tree annotations from `golden_labels.json`. These are **never** published to R2 to guarantee zero cheat vectors.
+3. **Dispatches AnnotationTasks** to miners — serves camouflaged Sentinel-2 chips and auto-purges them from R2 after each round.
+4. **Scores miner responses** on bounding boxes, flexible polygons/OBBs, and net canopy weight against the secret golden ground truth.
+5. **Exports high-value commercial annotations** to Cloudflare R2 under `commercial/commercial-dataset.jsonl` with visual polygon overlays.
+6. **Publishes on-chain weights** every tempo.
 
 ---
 
 ## Step 0: Install prerequisites
 
-You need Python 3.10+, Git, and at least 16 GB RAM (GEE downloads can be large).
+You need Python 3.10+, Git, and at least 16 GB RAM.
 
 ```bash
 # Clone the subnet repository
-git clone https://github.com/KomaiX512/DataAnnotation.git bittensor-subnet-template-1
+git clone https://github.com/Tech-Nucleus/DataAnnotation.git bittensor-subnet-template-1
 cd bittensor-subnet-template-1
+
 
 # ---- Neurons virtual environment (for validator scripts) ----
 python3 -m venv .venv-neurons
@@ -199,14 +198,16 @@ VALIDATOR_COMMERCIAL_EXPORT_EVERY=1
 | `VALIDATOR_COMMERCIAL_DATASET_PREFIX` | Where commercial exports are written |
 
 > [!NOTE]
-> **Default Testing Dataset in Cloudflare R2**:
-> A pre-annotated 400-image satellite dataset is available directly in the Cloudflare R2 `subnet` bucket under `dataset/`:
-> - `dataset/golden/` (100 satellite chips: `climate_tree_000.jpg` to `099.jpg`)
-> - `dataset/golden_labels.json` (Ground truth bounding box annotations for tree crowns)
-> - `dataset/raw/` (300 raw Sentinel-2 satellite chips: `climate_raw_000.jpg` to `299.jpg`)
-> - `dataset/training_pool/` (30 chips with ground-truth labels for miner zero-shot tuning)
+> **Clean R2 Storage Architecture & Secret Golden Isolation**:
+> The Cloudflare R2 bucket (`subnet`) strictly maintains 3 top-level directories:
+> - `dataset/raw/` (500 raw Sentinel-2 satellite chips: `climate_raw_000.jpg` to `499.jpg`)
+> - `miners/annotations/` (Miner submissions uploaded per task)
+> - `commercial/` (Commercial dataset exports with polygon overlays)
 >
-> Leave `R2_PUBLIC_BUCKET_URL` commented out in `.env`. The validator and miner automatically generate and consume authenticated S3 presigned URLs, ensuring seamless image downloads without requiring a custom public domain.
+> **Secret Golden Ground Truth Isolation**:
+> The 100 Golden chips (`climate_tree_000.jpg` to `099.jpg`) and `golden_labels.json` are stored **strictly on the validator's local filesystem** under `data/climate_mrv/samples/golden/` and are **never uploaded to R2**. This guarantees zero ground-truth leakage and ensures miners cannot bypass detection inference.
+>
+> Leave `R2_PUBLIC_BUCKET_URL` commented out in `.env`. The validator and miner automatically generate and consume authenticated S3 presigned URLs.
 
 ---
 
@@ -228,12 +229,10 @@ python3 -c "import ee; ee.Authenticate()"
 
 ### 4b. Pre-Packaged Offline Fallback (Default for Testnet 498)
 
-If GEE authentication is omitted, the validator automatically falls back
-to the pre-exported 400-image satellite dataset stored in `data/climate_mrv/samples/`
-and on Cloudflare R2:
-- 100 Golden chips (`climate_tree_000.jpg` to `099.jpg`) with ground-truth bounding boxes (`golden_labels.json`)
-- 300 Raw Sentinel-2 chips (`climate_raw_000.jpg` to `299.jpg`)
-- 30 Training pool chips for miner feedback
+If GEE authentication is omitted, the validator automatically loads
+the pre-exported satellite dataset from `data/climate_mrv/samples/`:
+- 100 Secret Golden chips (`climate_tree_000.jpg` to `099.jpg`) with ground-truth tree annotations (`golden_labels.json`) kept strictly local
+- 500 Raw Sentinel-2 chips (`climate_raw_000.jpg` to `499.jpg`) in `data/climate_mrv/samples/raw/` and synced with R2 `dataset/raw/`
 
 Set in `.env`:
 ```bash

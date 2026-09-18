@@ -16,6 +16,10 @@ class UnlabeledAnnotationImage(BaseModel):
 class PerImageAnnotationItem(BaseModel):
     hazard_class: str = Field(..., min_length=1)
     bounding_box: List[float] = Field(..., min_length=4, max_length=4)
+    polygon: Optional[List[List[float]]] = Field(None, description="Optional polygon contour coordinates [[x,y],...]")
+    area: Optional[float] = Field(None, description="Annotated object area in pixels")
+    weight: Optional[float] = Field(None, description="Ratio of object area to total image area")
+    confidence: Optional[float] = Field(None, description="Detection confidence score in [0, 1]")
 
 
 class LabeledTrainingImage(BaseModel):
@@ -37,6 +41,11 @@ class ImageAnnotationDocument(BaseModel):
     timestamp: str
     annotations: List[PerImageAnnotationItem]
     model_version: str = Field(..., min_length=8)
+    image_name: Optional[str] = Field(None, description="Canonical image filename (e.g. climate_raw_042.jpg)")
+    net_weight: Optional[float] = Field(None, description="Net tree coverage ratio in [0, 1]")
+    tree_coverage_ratio: Optional[float] = Field(None, description="Synonym for net_weight")
+    tree_coverage_percentage: Optional[float] = Field(None, description="Net tree coverage percentage (0-100%)")
+    tree_count: Optional[int] = Field(None, description="Total number of trees/clusters detected in image")
 
 
 class AnnotationsFilePayload(BaseModel):

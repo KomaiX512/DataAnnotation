@@ -14,12 +14,19 @@ ready.  No prior Bittensor experience is assumed.
 
 ## What a miner does
 
-1. Receives unlabeled **Sentinel-2 RGB chips** (256×256 px) from the validator
-2. Runs a vision model to classify each chip into one of the Climate MRV land-cover classes:
-   `intact_forest`, `degraded_forest`, `deforestation`, `regrowth`, `plantation`,
-   `wetland`, `water`, `agriculture`, `urban`, `fire_scar`, `bare_land`
-3. Uploads `annotations.json` to the shared Cloudflare R2 bucket
-4. Validator scores the miner against hidden golden samples (Hansen + ESA WorldCover) and publishes on-chain weights
+1. Receives unlabeled **Sentinel-2 RGB chips** (1024×1024 px) from the validator
+2. Runs a vision model (e.g. YOLOv8 tree detection or segmentation) to detect and delineate individual tree canopies, clusters, and forest hazards:
+   `individual_tree`, `group_of_trees`, `tree`, `intact_forest`, `degraded_forest`, `deforestation`, etc.
+3. Produces high-precision annotations supporting **flexible geometries**:
+   - `bounding_box`: standard `[x1, y1, x2, y2]`
+   - `polygon`: list of contour vertices `[[x1, y1], [x2, y2], ...]` for oriented bounding boxes (OBB) or polygonal canopies
+   - `area`: pixel area of the canopy
+   - `weight`: ratio of canopy area to total image area
+   - `net_weight` / `tree_coverage_percentage`: total tree coverage ratio for the image
+   - `image_name`: canonical filename (e.g. `climate_raw_042.jpg`)
+4. Uploads `annotations.json` to the Cloudflare R2 bucket under `miners/annotations/<task_id>/`
+5. Validator scores the miner's accuracy, geometry fidelity, and net weight coverage against strictly secret golden ground truth and sets on-chain weights
+
 
 ---
 
@@ -29,8 +36,9 @@ You need **Python 3.10+**, **Git**, and **8 GB+ RAM** (16 GB recommended for loc
 
 ```bash
 # Clone the subnet repository
-git clone https://github.com/KomaiX512/DataAnnotation.git bittensor-subnet-template-1
+git clone https://github.com/Tech-Nucleus/DataAnnotation.git bittensor-subnet-template-1
 cd bittensor-subnet-template-1
+
 
 # ---- Neurons virtual environment (for miner/validator scripts) ----
 python3 -m venv .venv-neurons
@@ -530,33 +538,76 @@ the repository root.  Key sources include:
 - **Golden samples**: Hansen Global Forest Change, ESA WorldCover, JRC TMF,
   Dynamic World, RADD Alerts
 
-### Retrieving Golden Datasets for Local Training
+### Retrieving Raw Satellite Imagery for Local Testing / Offline Training
 
-To fine-tune your local model on the same dataset structure used for validation, you can retrieve the pre-packaged golden sample dataset directly from the shared R2 bucket.
-
-The pre-exported chips and labels are stored under `data/climate_mrv/samples/` in the R2 bucket. You can download them recursively using the AWS CLI or any compatible S3 utility:
+Miners can download the official testnet satellite dataset directly from the public `dataset/raw/` prefix on Cloudflare R2:
 
 ```bash
-# Configure your AWS/R2 credentials first, then download the golden training dataset:
-aws s3 cp --recursive s3://subnet/data/climate_mrv/samples/ data/climate_mrv/samples/ \
+# Download the 500 Sentinel-2 satellite chips from R2:
+aws s3 cp --recursive s3://subnet/dataset/raw/ data/climate_mrv/samples/raw/ \
   --endpoint-url https://51abf57b5c6f9b6cf2f91cc87e0b9ffe.r2.cloudflarestorage.com
 ```
 
-This will download both:
-- `data/climate_mrv/samples/raw/` containing Sentinel-2 raw imagery chips.
-- `data/climate_mrv/samples/golden/` containing labeled ground-truth chips organized by hazard classes.
+> [!NOTE]
+> **Secret Golden Ground Truth Isolation**:
+> Golden benchmark samples and ground-truth annotations are strictly confidential to prevent evaluation leakage and cheating. They are stored locally only on the validator's machine and are never published to R2.
 
 ---
 
-## R2 Bucket path structure
+## Clean R2 Storage Architecture
 
-Each miner writes to its own directory inside the shared bucket:
+The subnet maintains a strictly organized 3-directory layout in the Cloudflare R2 bucket:
 
 ```
 subnet/
-└── miners/
-    └── annotations/
-        └── <task_id>/
-            ├── annotations.json    ← miner's annotation output
-            └── debug_image.jpg     ← optional annotated image
+├── dataset/
+│   └── raw/                       ← 500 clean Sentinel-2 satellite images (climate_raw_000.jpg ... 499.jpg)
+├── miners/
+│   └── annotations/
+│       └── <task_id>/
+│           └── annotations.json   ← Miner's polygon annotations & canopy coverage metrics
+└── commercial/
+    ├── commercial-dataset.jsonl   ← High-value validated dataset curated by validators
+    └── annotated_*.jpg            ← Curated visual overlays with polygon contours
 ```
+
+### Flexible Polygon and Net Weight Format (`annotations.json`)
+
+Miners submit annotations adhering to the subnet's v1 schema supporting flexible polygons, Oriented Bounding Boxes (OBB), object pixel areas, individual weights, and whole-image net tree coverage:
+
+```json
+{
+  "schema_version": "annotations.v1",
+  "task_id": "c1f7a94d-...",
+  "records": [
+    {
+      "image_id": "climate_raw_042",
+      "image_name": "climate_raw_042.jpg",
+      "image_url": "https://pub-...r2.dev/camouflaged/ann_step10_uid6_0.jpg",
+      "miner_uid": "5CtC...",
+      "timestamp": "2026-09-18T12:00:00Z",
+      "model_version": "tree_detection_v1.0",
+      "net_weight": 0.0842,
+      "tree_coverage_ratio": 0.0842,
+      "tree_coverage_percentage": 8.42,
+      "tree_count": 14,
+      "annotations": [
+        {
+          "hazard_class": "individual_tree",
+          "bounding_box": [124.5, 340.2, 185.0, 402.8],
+          "polygon": [
+            [124.5, 345.0],
+            [178.2, 340.2],
+            [185.0, 398.0],
+            [130.1, 402.8]
+          ],
+          "area": 3240.5,
+          "weight": 0.00309,
+          "confidence": 0.94
+        }
+      ]
+    }
+  ]
+}
+```
+

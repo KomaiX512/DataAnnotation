@@ -215,3 +215,8 @@ logs/
 
 # PDFs
 *.pdf
+
+# Scratch / Training data
+train/
+artifacts/
+

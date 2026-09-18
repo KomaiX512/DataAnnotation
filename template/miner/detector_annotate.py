@@ -40,19 +40,28 @@ def annotate_image_detector_only(
         result = results[0]
         boxes = result.boxes
         if boxes is not None:
-            for box in boxes:
-                # Get xyxy coordinates
-                xyxy = box.xyxy[0].tolist()  # [xmin, ymin, xmax, ymax]
-                # Get class label/index
+            from template.miner.geometry import extract_canopy_geometry
+            for b_idx, box in enumerate(boxes):
+                xyxy = box.xyxy[0].tolist()
                 cls_idx = int(box.cls[0].item())
                 cls_name = model.names[cls_idx]
-
-                annotations.append(
-                    PerImageAnnotationItem(
-                        hazard_class=cls_name,
-                        bounding_box=xyxy,
-                    )
+                conf = float(box.conf[0].item()) if hasattr(box, "conf") and box.conf is not None else 1.0
+                mask_xy = None
+                if hasattr(result, "masks") and result.masks is not None and len(result.masks) > b_idx:
+                    mask_xy = result.masks.xy[b_idx].tolist()
+                ann_item = extract_canopy_geometry(
+                    pil_img=img,
+                    box_xyxy=xyxy,
+                    hazard_class=cls_name,
+                    confidence=conf,
+                    mask_xy=mask_xy,
                 )
+                annotations.append(ann_item)
+
+    from template.miner.geometry import compute_image_net_metrics, canonical_image_name
+    img_w, img_h = img.size if hasattr(img, "size") else (1024, 1024)
+    net_weight, coverage_pct, tree_count = compute_image_net_metrics(annotations, img_w, img_h)
+    canonical_name = canonical_image_name(image_id, image_url)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return ImageAnnotationDocument(
@@ -62,4 +71,10 @@ def annotate_image_detector_only(
         timestamp=ts,
         annotations=annotations,
         model_version=model_version,
+        image_name=canonical_name,
+        net_weight=net_weight,
+        tree_coverage_ratio=net_weight,
+        tree_coverage_percentage=coverage_pct,
+        tree_count=tree_count,
     )
+

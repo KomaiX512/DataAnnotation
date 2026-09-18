@@ -204,15 +204,34 @@ class ModelTrainingAnnotationEngine:
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             image_url_map = {spec.image_id: spec.image_url for spec in synapse.annotation_images}
             records: List[ImageAnnotationDocument] = []
+            from template.miner.geometry import compute_image_net_metrics, canonical_image_name
+
             for image_id, anns in annotations_map.items():
+                url = image_url_map.get(image_id, "")
+                canonical_name = canonical_image_name(image_id, url)
+                img_w, img_h = 1024, 1024
+                if image_id in image_paths and Path(image_paths[image_id]).is_file():
+                    try:
+                        from PIL import Image as PILImage
+                        with PILImage.open(image_paths[image_id]) as _im:
+                            img_w, img_h = _im.size
+                    except Exception:
+                        pass
+                net_weight, coverage_pct, tree_count = compute_image_net_metrics(anns, img_w, img_h)
+
                 records.append(
                     ImageAnnotationDocument(
                         image_id=image_id,
-                        image_url=image_url_map.get(image_id, ""),
+                        image_url=url,
                         model_version=self._cached_model_version or "pretrained0",
                         miner_uid=miner_hotkey,
                         timestamp=ts,
                         annotations=anns,
+                        image_name=canonical_name,
+                        net_weight=net_weight,
+                        tree_coverage_ratio=net_weight,
+                        tree_coverage_percentage=coverage_pct,
+                        tree_count=tree_count,
                     )
                 )
 
@@ -221,6 +240,7 @@ class ModelTrainingAnnotationEngine:
             # on a single image).  The validator MUST see every image_id.
             for spec in synapse.annotation_images:
                 if spec.image_id not in annotations_map:
+                    canonical_name = canonical_image_name(spec.image_id, spec.image_url)
                     records.append(
                         ImageAnnotationDocument(
                             image_id=spec.image_id,
@@ -229,8 +249,14 @@ class ModelTrainingAnnotationEngine:
                             miner_uid=miner_hotkey,
                             timestamp=ts,
                             annotations=[],
+                            image_name=canonical_name,
+                            net_weight=0.0,
+                            tree_coverage_ratio=0.0,
+                            tree_coverage_percentage=0.0,
+                            tree_count=0,
                         )
                     )
+
 
             payload = AnnotationsFilePayload(
                 schema_version="annotations.v1",

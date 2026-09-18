@@ -134,11 +134,19 @@ class SelfHostedBackend(BaseModelBackend):
             image_id = entry.get("image_id", "")
             hazard_class = entry.get("hazard_class", "")
             bbox = entry.get("bounding_box", [])
+            polygon = entry.get("polygon")
+            area = entry.get("area")
+            weight = entry.get("weight")
+            conf = entry.get("confidence")
             if image_id and hazard_class and len(bbox) == 4:
                 results.setdefault(image_id, []).append(
                     PerImageAnnotationItem(
                         hazard_class=hazard_class,
                         bounding_box=[float(v) for v in bbox],
+                        polygon=polygon,
+                        area=float(area) if area is not None else None,
+                        weight=float(weight) if weight is not None else None,
+                        confidence=float(conf) if conf is not None else None,
                     )
                 )
 

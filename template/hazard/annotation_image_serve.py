@@ -123,8 +123,21 @@ async def build_camouflaged_annotation_images(
 
 
 def cleanup_ephemeral_annotation_files(paths: Sequence[Path]) -> None:
+    r2_keys: List[str] = []
     for p in paths:
         try:
+            r2_keys.append(f"camouflaged/{p.name}")
             p.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover
             bt.logging.warning(f"event=annotation_ephemeral_cleanup_failed path={p} err={exc}")
+
+    if r2_keys:
+        try:
+            from template.hazard.r2_storage import load_r2_credentials_from_env, delete_objects_from_r2
+            creds = load_r2_credentials_from_env()
+            del_count = delete_objects_from_r2(r2_keys, creds=creds)
+            if del_count > 0:
+                bt.logging.debug(f"event=r2_camouflaged_cleanup deleted={del_count} keys")
+        except Exception as exc:
+            bt.logging.debug(f"event=r2_camouflaged_cleanup_skipped reason={exc}")
+

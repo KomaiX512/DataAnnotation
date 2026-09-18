@@ -212,3 +212,32 @@ def upload_image_to_r2(
         object_key=object_key,
         expires_in=presigned_get_url_expires_seconds(),
     )
+
+
+def delete_objects_from_r2(
+    object_keys: list[str],
+    *,
+    creds: R2AccessCredentials,
+) -> int:
+    """Delete a list of object keys from R2 in batches of up to 1000.
+    
+    Returns the number of successfully deleted objects.
+    """
+    if not object_keys:
+        return 0
+    client = _s3_client(creds)
+    deleted_count = 0
+    for i in range(0, len(object_keys), 1000):
+        chunk = object_keys[i : i + 1000]
+        delete_spec = [{"Key": k} for k in chunk]
+        try:
+            resp = client.delete_objects(
+                Bucket=creds.bucket_name,
+                Delete={"Objects": delete_spec, "Quiet": True},
+            )
+            errors = resp.get("Errors", [])
+            deleted_count += len(chunk) - len(errors)
+        except Exception:
+            pass
+    return deleted_count
+

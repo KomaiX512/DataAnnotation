@@ -52,6 +52,9 @@ class FidelityComponents:
     matched_count: int
     hallucinated_count: int
     ground_truth_count: int
+    net_weight_agreement: float = 1.0
+    gt_net_weight: float = 0.0
+    miner_net_weight: float = 0.0
 
 
 @dataclass
@@ -74,6 +77,15 @@ class AnnotationFidelityScorer:
         golden: GoldenImage,
     ) -> FidelityComponents:
         gt_annotations: Sequence[GoldenAnnotation] = golden.annotations
+        img_area = float(max(1, golden.width * golden.height))
+        miner_area = 0.0
+        for item in miner_items:
+            if item.area is not None and item.area > 0:
+                miner_area += float(item.area)
+            elif item.bounding_box and len(item.bounding_box) == 4:
+                miner_area += max(0.0, float(item.bounding_box[2] - item.bounding_box[0])) * max(0.0, float(item.bounding_box[3] - item.bounding_box[1]))
+        miner_net_weight = round(min(1.0, miner_area / img_area), 6)
+
         if not gt_annotations:
             # Golden image has zero ground-truth hazards.
             if not miner_items:
@@ -86,6 +98,9 @@ class AnnotationFidelityScorer:
                     matched_count=0,
                     hallucinated_count=0,
                     ground_truth_count=0,
+                    net_weight_agreement=1.0,
+                    gt_net_weight=0.0,
+                    miner_net_weight=0.0,
                 )
             # Miner hallucinated detections on a clean image — penalise.
             penalty = self.hallucination_penalty ** len(miner_items)
@@ -97,7 +112,18 @@ class AnnotationFidelityScorer:
                 matched_count=0,
                 hallucinated_count=len(miner_items),
                 ground_truth_count=0,
+                net_weight_agreement=max(0.0, 1.0 - miner_net_weight),
+                gt_net_weight=0.0,
+                miner_net_weight=miner_net_weight,
             )
+
+        gt_area = sum(
+            max(0.0, float(gt.bounding_box[2] - gt.bounding_box[0])) * max(0.0, float(gt.bounding_box[3] - gt.bounding_box[1]))
+            for gt in gt_annotations
+        )
+        gt_net_weight = round(min(1.0, gt_area / img_area), 6)
+        weight_diff = abs(miner_net_weight - gt_net_weight)
+        net_weight_agreement = round(max(0.0, 1.0 - weight_diff), 6)
 
         # Greedy 1-1 matching: for each ground truth box, find best miner item
         # by IoU; track which miner items matched something.
@@ -142,7 +168,9 @@ class AnnotationFidelityScorer:
             self.iou_weight * iou_avg
             + self.class_weight * class_avg
         )
-        fidelity = max(0.0, min(1.0, fidelity_raw * penalty))
+        # Factor in net canopy weight agreement
+        coverage_factor = 0.85 + 0.15 * net_weight_agreement
+        fidelity = max(0.0, min(1.0, fidelity_raw * penalty * coverage_factor))
 
         return FidelityComponents(
             iou=float(iou_avg),
@@ -152,7 +180,11 @@ class AnnotationFidelityScorer:
             matched_count=len(used_miner_idx),
             hallucinated_count=int(hallucinated),
             ground_truth_count=int(len(gt_annotations)),
+            net_weight_agreement=float(net_weight_agreement),
+            gt_net_weight=float(gt_net_weight),
+            miner_net_weight=float(miner_net_weight),
         )
+
 
 
 def _class_match_score(

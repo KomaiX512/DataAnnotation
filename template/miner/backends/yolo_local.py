@@ -253,17 +253,25 @@ class YoloLocalBackend(BaseModelBackend):
                 result = results[0]
                 boxes = result.boxes
                 if boxes is not None:
-                    for box in boxes:
+                    from template.miner.geometry import extract_canopy_geometry
+                    for b_idx, box in enumerate(boxes):
                         xyxy = box.xyxy[0].tolist()
                         cls_idx = int(box.cls[0].item())
                         cls_name = model.names.get(cls_idx, f"class_{cls_idx}")
-                        annotations.append(
-                            PerImageAnnotationItem(
-                                hazard_class=cls_name,
-                                bounding_box=xyxy,
-                            )
+                        conf = float(box.conf[0].item()) if hasattr(box, "conf") and box.conf is not None else 1.0
+                        mask_xy = None
+                        if hasattr(result, "masks") and result.masks is not None and len(result.masks) > b_idx:
+                            mask_xy = result.masks.xy[b_idx].tolist()
+                        ann_item = extract_canopy_geometry(
+                            pil_img=pil_img,
+                            box_xyxy=xyxy,
+                            hazard_class=cls_name,
+                            confidence=conf,
+                            mask_xy=mask_xy,
                         )
+                        annotations.append(ann_item)
             results_map[img.image_id] = annotations
+
 
         return results_map
 

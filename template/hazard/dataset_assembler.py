@@ -74,6 +74,9 @@ class AggregatedObject:
     miner_votes: Sequence[MinerVote]
     escalation_reason: Optional[str]
     aggregation_method: str = "bayesian_dawid_skene_v1"
+    fused_polygon: Optional[List[List[float]]] = None
+    area: Optional[float] = None
+    weight: Optional[float] = None
 
     def to_jsonable(self) -> dict:
         return {
@@ -86,6 +89,9 @@ class AggregatedObject:
             "class_posterior_distribution": self.class_posterior_distribution,
             "severity_posterior_distribution": self.severity_posterior_distribution,
             "fused_bounding_box": list(self.fused_bounding_box) if self.fused_bounding_box is not None else None,
+            "fused_polygon": self.fused_polygon,
+            "area": self.area,
+            "weight": self.weight,
             "spatial_mean_iou_to_median": float(self.spatial_mean_iou_to_median),
             "miner_votes": [v.to_jsonable() for v in self.miner_votes],
             "escalation_reason": self.escalation_reason,
@@ -113,10 +119,20 @@ class WinningAnnotation:
     validator_version: str
     timestamp: str
     annotated_image_url: Optional[str] = None
+    image_name: Optional[str] = None
+    net_weight: Optional[float] = None
+    tree_coverage_ratio: Optional[float] = None
+    tree_coverage_percentage: Optional[float] = None
+    tree_count: Optional[int] = None
 
     def to_jsonable(self) -> dict:
         payload = {
             "image_id": self.image_id,
+            "image_name": self.image_name,
+            "net_weight": self.net_weight,
+            "tree_coverage_ratio": self.tree_coverage_ratio,
+            "tree_coverage_percentage": self.tree_coverage_percentage,
+            "tree_count": self.tree_count,
             "score": float(self.score),
             "chosen_uid": int(self.chosen_uid),
             "image_url": self.image_url,
@@ -244,6 +260,8 @@ class DatasetAssembler:
             }
             width, height = self._image_dims(image_id)
             image_url = self._image_url(image_id)
+            from template.miner.geometry import canonical_image_name
+            canonical_name = canonical_image_name(image_id, image_url)
             if is_golden:
                 # Golden rows are scoring-only; keep compact lane.
                 best_uid = -1
@@ -257,6 +275,7 @@ class DatasetAssembler:
                     winners.append(
                         WinningAnnotation(
                             image_id=image_id,
+                            image_name=canonical_name,
                             score=float(max(0.0, best_score)),
                             chosen_uid=int(best_uid),
                             is_golden=True,
@@ -272,6 +291,10 @@ class DatasetAssembler:
                             acceptance_thresholds=self._acceptance_thresholds(),
                             validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
                             timestamp=str(timestamps.get(best_uid, "")),
+                            net_weight=0.0,
+                            tree_coverage_ratio=0.0,
+                            tree_coverage_percentage=0.0,
+                            tree_count=0,
                         )
                     )
                 continue
@@ -283,9 +306,24 @@ class DatasetAssembler:
                 miner_hotkeys=miner_hotkeys,
                 priors=priors,
             )
+            accepted_objs = aggregated["objects"]
+            img_area = float(max(1, width * height))
+            total_tree_area = 0.0
+            for obj in accepted_objs:
+                if obj.accepted_hazard_class and obj.accepted_hazard_class != "_background":
+                    if obj.area is not None and obj.area > 0:
+                        total_tree_area += obj.area
+                    elif obj.fused_bounding_box:
+                        b = obj.fused_bounding_box
+                        total_tree_area += max(0.0, (b[2] - b[0]) * (b[3] - b[1]))
+            net_weight = round(min(1.0, max(0.0, total_tree_area / img_area)), 6)
+            coverage_pct = round(net_weight * 100.0, 2)
+            tree_cnt = len([o for o in accepted_objs if o.accepted_hazard_class and o.accepted_hazard_class != "_background"])
+
             winners.append(
                 WinningAnnotation(
                     image_id=image_id,
+                    image_name=canonical_name,
                     score=float(aggregated["score"]),
                     chosen_uid=int(aggregated["chosen_uid"]),
                     is_golden=False,
@@ -295,14 +333,19 @@ class DatasetAssembler:
                     height=int(height),
                     escalation_required=bool(aggregated["escalation_required"]),
                     escalation_reason=aggregated["escalation_reason"],
-                    accepted_objects=aggregated["objects"],
+                    accepted_objects=accepted_objs,
                     miner_contribution_scores=aggregated["miner_contribution_scores"],
                     reliability_window=self._reliability_window(timestamps),
                     acceptance_thresholds=self._acceptance_thresholds(),
                     validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
                     timestamp=str(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                    net_weight=net_weight,
+                    tree_coverage_ratio=net_weight,
+                    tree_coverage_percentage=coverage_pct,
+                    tree_count=tree_cnt,
                 )
             )
+
 
         self.ledger.record_round(winners)
         bt.logging.info(
@@ -485,8 +528,13 @@ class DatasetAssembler:
 
                 color = self._get_color_for_class(obj.accepted_hazard_class)
 
-                # Draw thick bounding box
-                for offset in range(3):
+                # Draw polygon contour if available
+                if obj.fused_polygon and len(obj.fused_polygon) >= 3:
+                    pts = [(float(p[0]), float(p[1])) for p in obj.fused_polygon]
+                    draw.line(pts + [pts[0]], fill=color, width=3)
+
+                # Draw bounding box
+                for offset in range(2):
                     draw.rectangle(
                         [xmin + offset, ymin + offset, xmax - offset, ymax - offset],
                         outline=color,
@@ -665,6 +713,9 @@ class DatasetAssembler:
                                 class_posterior_distribution={cls: sole_reliability},
                                 severity_posterior_distribution={sev: 1.0},
                                 fused_bounding_box=box,
+                                fused_polygon=item.polygon,
+                                area=item.area,
+                                weight=item.weight,
                                 spatial_mean_iou_to_median=1.0,
                                 miner_votes=[vote],
                                 escalation_reason=None,
@@ -856,6 +907,21 @@ class DatasetAssembler:
                 )
                 impacts[uid] = max(0.0, full_conf - float(reduced.get(accepted_class, 0.0)))
 
+        best_item = None
+        best_weight = -1.0
+        for uid, item in cluster_votes:
+            sc = per_miner_scores.get(uid)
+            w = sc.average_score() if sc is not None else 0.0
+            if w > best_weight:
+                best_weight = w
+                best_item = item
+
+        fused_poly = best_item.polygon if best_item is not None else None
+        obj_area = best_item.area if best_item is not None else None
+        obj_weight = best_item.weight if best_item is not None else None
+        if obj_area is None and fused_box is not None:
+            obj_area = round(float(max(0.0, (fused_box[2] - fused_box[0]) * (fused_box[3] - fused_box[1]))), 2)
+
         return AggregatedObject(
             object_cluster_id=cluster_id,
             accepted_hazard_class=accepted_class,
@@ -865,6 +931,9 @@ class DatasetAssembler:
             class_posterior_distribution=class_post,
             severity_posterior_distribution=sev_post,
             fused_bounding_box=fused_box,
+            fused_polygon=fused_poly,
+            area=obj_area,
+            weight=obj_weight,
             spatial_mean_iou_to_median=float(mean_iou_to_median),
             miner_votes=per_miner_votes,
             escalation_reason=escalation_reason,

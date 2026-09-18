@@ -60,6 +60,13 @@ except ImportError:
     Image = None  # type: ignore[assignment,misc]
 
 try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = None
+    np = None
+
+try:
     from urllib.request import Request, urlopen
 except ImportError:
     Request = None  # type: ignore[assignment,misc]
@@ -150,6 +157,10 @@ class AnnotationItem(BaseModel):
     image_id: str
     hazard_class: str
     bounding_box: List[float]
+    polygon: Optional[List[List[float]]] = None
+    area: Optional[float] = None
+    weight: Optional[float] = None
+    confidence: Optional[float] = None
 
 
 class InferResponse(BaseModel):
@@ -712,19 +723,80 @@ def infer(req: InferRequest):
             results = model(pil_img, verbose=False)
 
             if results and len(results) > 0:
-                boxes = results[0].boxes
+                res = results[0]
+                boxes = res.boxes
                 if boxes is not None:
-                    for box in boxes:
+                    img_w, img_h = pil_img.width, pil_img.height
+                    img_area = float(max(1, img_w * img_h))
+                    np_img = np.array(pil_img) if np is not None else None
+
+                    for b_idx, box in enumerate(boxes):
                         xyxy = box.xyxy[0].tolist()
                         cls_idx = int(box.cls[0].item())
                         cls_name = model.names.get(cls_idx, f"class_{cls_idx}")
+                        conf = float(box.conf[0].item()) if hasattr(box, "conf") and box.conf is not None else 1.0
+                        x1, y1, x2, y2 = [float(c) for c in xyxy]
+
+                        poly = None
+                        poly_area = None
+                        if hasattr(res, "masks") and res.masks is not None and len(res.masks) > b_idx:
+                            mask_poly = res.masks.xy[b_idx]
+                            if len(mask_poly) >= 3:
+                                poly = [[round(float(p[0]), 2), round(float(p[1]), 2)] for p in mask_poly]
+                                if cv2 is not None and np is not None:
+                                    poly_area = float(cv2.contourArea(np.array(poly, dtype=np.float32)))
+
+                        if poly is None and cv2 is not None and np_img is not None:
+                            try:
+                                ix1, iy1 = max(0, int(x1)), max(0, int(y1))
+                                ix2, iy2 = min(img_w, int(x2)), min(img_h, int(y2))
+                                if ix2 > ix1 and iy2 > iy1:
+                                    crop = np_img[iy1:iy2, ix1:ix2]
+                                    if crop.ndim == 3 and crop.shape[2] >= 3:
+                                        r = crop[:, :, 0].astype(np.float32)
+                                        g = crop[:, :, 1].astype(np.float32)
+                                        b = crop[:, :, 2].astype(np.float32)
+                                        exg = 2.0 * g - r - b
+                                        exg_norm = np.clip((exg - exg.min()) / (exg.max() - exg.min() + 1e-5) * 255.0, 0, 255).astype(np.uint8)
+                                        _, thresh = cv2.threshold(exg_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                    else:
+                                        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.ndim == 3 else crop
+                                        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                    if contours:
+                                        cnt = max(contours, key=cv2.contourArea)
+                                        c_area = float(cv2.contourArea(cnt))
+                                        if c_area > 8:
+                                            rect = cv2.minAreaRect(cnt)
+                                            box_pts = cv2.boxPoints(rect)
+                                            poly = [[round(float(p[0] + ix1), 2), round(float(p[1] + iy1), 2)] for p in box_pts]
+                                            poly_area = c_area
+                            except Exception:
+                                pass
+
+                        if poly is None:
+                            poly = [
+                                [round(x1, 2), round(y1, 2)],
+                                [round(x2, 2), round(y1, 2)],
+                                [round(x2, 2), round(y2, 2)],
+                                [round(x1, 2), round(y2, 2)],
+                            ]
+                        if poly_area is None or poly_area <= 0:
+                            poly_area = float(max(0.0, (x2 - x1) * (y2 - y1)))
+
+                        obj_weight = round(poly_area / img_area, 6)
                         all_annotations.append(
                             AnnotationItem(
                                 image_id=img_spec.image_id,
                                 hazard_class=cls_name,
-                                bounding_box=xyxy,
+                                bounding_box=[round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
+                                polygon=poly,
+                                area=round(poly_area, 2),
+                                weight=obj_weight,
+                                confidence=round(conf, 4),
                             )
                         )
+
         except Exception as exc:
             logger.warning("[infer] failed for %s: %s", img_spec.image_id, exc)
 
