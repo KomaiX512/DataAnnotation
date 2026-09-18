@@ -14,7 +14,7 @@ Thank you for your interest in contributing to the decentralized data annotation
 ### 1.2 Installation
 Clone the repository and install the dependencies:
 ```bash
-git clone https://github.com/KomaiX512/DataAnnotation.git
+git clone https://github.com/Tech-Nucleus/DataAnnotation.git
 cd DataAnnotation
 pip install -r requirements.txt
 pip install -e .

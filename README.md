@@ -44,7 +44,7 @@ Validators set on-chain weights proportionally; honest, high-quality miners earn
 ## Quick Start (3 steps)
 
 ```bash
-git clone https://github.com/KomaiX512/DataAnnotation.git bittensor-subnet-template-1 && cd bittensor-subnet-template-1
+git clone https://github.com/Tech-Nucleus/DataAnnotation.git bittensor-subnet-template-1 && cd bittensor-subnet-template-1
 pip install -r requirements.txt
 cp .env.testnet.example .env   # pre-filled for testnet (netuid 498) — edit wallet name only
 ```
