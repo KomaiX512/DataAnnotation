@@ -1,0 +1,3 @@
+<Bytes>On 2026-08-20 21:26:40.778411 PKT Hi There, Technology Nucleus wants to run Climate MRV annotation subnet and requires discord channel for it.</Bytes>
+	Signed by: 5Cz1iSzm1pDLfshLSDpVue5WoD3jCbM5jpmpyizoDGCmqinK
+	Signature: ac8015e674261d6296bf09c5f2f296d9204eac710107f9ec4c041c504805c57ccfe31280ae17b51439fd32ed6527652fafc2f94737ac801e8f7ac2e0cd837e8b
