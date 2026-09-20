@@ -1,16 +1,42 @@
 """
-Geometry and Net Weight utilities for flexible tree annotations.
+Geometry and Net Weight utilities for flexible tree annotations and Carbon MRV.
 Supports:
 - Flexible polygons and Oriented Bounding Boxes (OBB)
+- Ecological carbon weight multipliers (mangrove: 3.5x, dense_tree: 1.8x, ordinary_tree: 1.0x, farm: 0.7x, plant: 0.4x)
 - Per-object pixel area and coverage weight
-- Whole-image net_weight, tree_coverage_percentage, tree_count
+- Whole-image net_weight (sum of box carbon weights), tree_coverage_percentage, tree_count
 - Canonical image filename normalization
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from template.protocol import PerImageAnnotationItem
+
+#: Ecological carbon credit weight multipliers based on CO2 sequestration capacity
+CARBON_WEIGHT_MULTIPLIERS: Dict[str, float] = {
+    "mangrove": 3.5,        # Ultra-high blue carbon sequestration (coastal wetland)
+    "dense_tree": 1.8,      # Mature dense forest canopy / high biomass density
+    "ordinary_tree": 1.0,   # Baseline standard terrestrial tree crown
+    "field": 0.7,           # Agricultural cropland, agroforestry, managed fields
+    "plant": 0.4,           # Woody shrubs, understory perennial plants (not grass)
+}
+
+
+def canonical_carbon_class(raw_class: str) -> str:
+    """Normalize raw class / hazard label into canonical Carbon MRV taxonomy."""
+    c = (raw_class or "").lower().strip()
+    if any(k in c for k in ("mangrove", "wetland")):
+        return "mangrove"
+    if any(k in c for k in ("dense", "group", "intact_forest", "forest", "dense_tree")):
+        return "dense_tree"
+    if any(k in c for k in ("field", "farm", "agri", "crop", "plantation")):
+        return "field"
+    if any(k in c for k in ("plant", "shrub", "regrowth", "understory", "brush")):
+        return "plant"
+    if any(k in c for k in ("individual", "ordinary", "tree", "crown")):
+        return "ordinary_tree"
+    return "ordinary_tree"
 
 
 def extract_canopy_geometry(
@@ -19,8 +45,9 @@ def extract_canopy_geometry(
     hazard_class: str,
     confidence: float = 1.0,
     mask_xy: Optional[List[List[float]]] = None,
+    canonicalize: bool = False,
 ) -> PerImageAnnotationItem:
-    """Extract flexible polygon/OBB contour, pixel area, and area weight."""
+    """Extract flexible polygon/OBB contour, pixel area, and ecological carbon weight."""
     x1, y1, x2, y2 = [float(c) for c in box_xyxy]
     img_w, img_h = pil_img.width, pil_img.height
     img_area = float(max(1, img_w * img_h))
@@ -82,9 +109,15 @@ def extract_canopy_geometry(
     if poly_area is None or poly_area <= 0:
         poly_area = float(max(0.0, (x2 - x1) * (y2 - y1)))
 
-    obj_weight = round(poly_area / img_area, 6)
+    # Canonical carbon class & ecological multiplier
+    canon_cls = canonical_carbon_class(hazard_class)
+    carbon_mult = CARBON_WEIGHT_MULTIPLIERS.get(canon_cls, 1.0)
+    item_ratio = poly_area / img_area
+    obj_weight = round(item_ratio * carbon_mult, 6)
+    final_class = canon_cls if canonicalize else hazard_class
+
     return PerImageAnnotationItem(
-        hazard_class=hazard_class,
+        hazard_class=final_class,
         bounding_box=[round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
         polygon=poly,
         area=round(poly_area, 2),
@@ -100,8 +133,8 @@ def compute_image_net_metrics(
 ) -> Tuple[float, float, int]:
     """Compute (net_weight, tree_coverage_percentage, tree_count) for an image.
     
-    net_weight: ratio in [0.0, 1.0] representing total canopy coverage.
-    tree_coverage_percentage: percentage in [0.0, 100.0]
+    net_weight: composite ecological carbon weight (sum of all box weights).
+    tree_coverage_percentage: physical vegetation/tree coverage percentage in [0.0, 100.0]
     tree_count: total detections
     """
     tree_count = len(annotations)
@@ -109,16 +142,29 @@ def compute_image_net_metrics(
         return 0.0, 0.0, 0
 
     img_area = float(max(1, image_width * image_height))
-    total_area = 0.0
-    for ann in annotations:
-        if ann.area is not None and ann.area > 0:
-            total_area += ann.area
-        elif ann.bounding_box and len(ann.bounding_box) == 4:
-            x1, y1, x2, y2 = ann.bounding_box
-            total_area += max(0.0, (x2 - x1) * (y2 - y1))
+    total_physical_area = 0.0
+    total_carbon_weight = 0.0
 
-    net_weight = round(min(1.0, max(0.0, total_area / img_area)), 6)
-    tree_coverage_percentage = round(net_weight * 100.0, 2)
+    for ann in annotations:
+        area = ann.area
+        if area is None or area <= 0:
+            if ann.bounding_box and len(ann.bounding_box) == 4:
+                x1, y1, x2, y2 = ann.bounding_box
+                area = max(0.0, (x2 - x1) * (y2 - y1))
+            else:
+                area = 0.0
+        total_physical_area += area
+
+        if ann.weight is not None and ann.weight >= 0:
+            total_carbon_weight += ann.weight
+        else:
+            canon_cls = canonical_carbon_class(ann.hazard_class)
+            mult = CARBON_WEIGHT_MULTIPLIERS.get(canon_cls, 1.0)
+            total_carbon_weight += (area / img_area) * mult
+
+    net_weight = round(total_carbon_weight, 6)
+    physical_ratio = min(1.0, max(0.0, total_physical_area / img_area))
+    tree_coverage_percentage = round(physical_ratio * 100.0, 2)
     return net_weight, tree_coverage_percentage, tree_count
 
 
@@ -134,4 +180,3 @@ def canonical_image_name(image_id: str, image_url: str = "") -> str:
     if not any(raw.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff")):
         raw = f"{raw}.jpg"
     return raw
-

@@ -307,17 +307,29 @@ class DatasetAssembler:
                 priors=priors,
             )
             accepted_objs = aggregated["objects"]
+            from template.miner.geometry import (
+                CARBON_WEIGHT_MULTIPLIERS,
+                canonical_carbon_class,
+            )
+
             img_area = float(max(1, width * height))
             total_tree_area = 0.0
+            total_carbon_weight = 0.0
             for obj in accepted_objs:
                 if obj.accepted_hazard_class and obj.accepted_hazard_class != "_background":
-                    if obj.area is not None and obj.area > 0:
-                        total_tree_area += obj.area
-                    elif obj.fused_bounding_box:
-                        b = obj.fused_bounding_box
-                        total_tree_area += max(0.0, (b[2] - b[0]) * (b[3] - b[1]))
-            net_weight = round(min(1.0, max(0.0, total_tree_area / img_area)), 6)
-            coverage_pct = round(net_weight * 100.0, 2)
+                    area = obj.area if obj.area is not None and obj.area > 0 else (
+                        max(0.0, (obj.fused_bounding_box[2] - obj.fused_bounding_box[0]) *
+                                 (obj.fused_bounding_box[3] - obj.fused_bounding_box[1]))
+                        if obj.fused_bounding_box and len(obj.fused_bounding_box) == 4 else 0.0
+                    )
+                    total_tree_area += area
+                    c_cls = canonical_carbon_class(obj.accepted_hazard_class)
+                    mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
+                    total_carbon_weight += (area / img_area) * mult
+
+            net_weight = round(total_carbon_weight, 6)
+            coverage_ratio = min(1.0, max(0.0, total_tree_area / img_area))
+            coverage_pct = round(coverage_ratio * 100.0, 2)
             tree_cnt = len([o for o in accepted_objs if o.accepted_hazard_class and o.accepted_hazard_class != "_background"])
 
             winners.append(

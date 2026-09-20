@@ -78,13 +78,24 @@ class AnnotationFidelityScorer:
     ) -> FidelityComponents:
         gt_annotations: Sequence[GoldenAnnotation] = golden.annotations
         img_area = float(max(1, golden.width * golden.height))
-        miner_area = 0.0
+        from template.miner.geometry import (
+            CARBON_WEIGHT_MULTIPLIERS,
+            canonical_carbon_class,
+        )
+
+        miner_net_weight = 0.0
         for item in miner_items:
-            if item.area is not None and item.area > 0:
-                miner_area += float(item.area)
-            elif item.bounding_box and len(item.bounding_box) == 4:
-                miner_area += max(0.0, float(item.bounding_box[2] - item.bounding_box[0])) * max(0.0, float(item.bounding_box[3] - item.bounding_box[1]))
-        miner_net_weight = round(min(1.0, miner_area / img_area), 6)
+            if item.weight is not None and item.weight >= 0:
+                miner_net_weight += float(item.weight)
+            else:
+                area = float(item.area) if item.area is not None and item.area > 0 else (
+                    max(0.0, float(item.bounding_box[2] - item.bounding_box[0])) *
+                    max(0.0, float(item.bounding_box[3] - item.bounding_box[1])) if item.bounding_box and len(item.bounding_box) == 4 else 0.0
+                )
+                c_cls = canonical_carbon_class(item.hazard_class)
+                mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
+                miner_net_weight += (area / img_area) * mult
+        miner_net_weight = round(miner_net_weight, 6)
 
         if not gt_annotations:
             # Golden image has zero ground-truth hazards.
@@ -117,13 +128,16 @@ class AnnotationFidelityScorer:
                 miner_net_weight=miner_net_weight,
             )
 
-        gt_area = sum(
-            max(0.0, float(gt.bounding_box[2] - gt.bounding_box[0])) * max(0.0, float(gt.bounding_box[3] - gt.bounding_box[1]))
-            for gt in gt_annotations
-        )
-        gt_net_weight = round(min(1.0, gt_area / img_area), 6)
+        gt_net_weight = 0.0
+        for gt in gt_annotations:
+            area = max(0.0, float(gt.bounding_box[2] - gt.bounding_box[0])) * max(0.0, float(gt.bounding_box[3] - gt.bounding_box[1]))
+            c_cls = canonical_carbon_class(gt.hazard_class)
+            mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
+            gt_net_weight += (area / img_area) * mult
+        gt_net_weight = round(gt_net_weight, 6)
+
         weight_diff = abs(miner_net_weight - gt_net_weight)
-        net_weight_agreement = round(max(0.0, 1.0 - weight_diff), 6)
+        net_weight_agreement = round(max(0.0, 1.0 - (weight_diff / max(gt_net_weight, 0.05))), 6)
 
         # Greedy 1-1 matching: for each ground truth box, find best miner item
         # by IoU; track which miner items matched something.
@@ -168,8 +182,8 @@ class AnnotationFidelityScorer:
             self.iou_weight * iou_avg
             + self.class_weight * class_avg
         )
-        # Factor in net canopy weight agreement
-        coverage_factor = 0.85 + 0.15 * net_weight_agreement
+        # Factor in net carbon weight agreement (weight cross-verification)
+        coverage_factor = 0.70 + 0.30 * net_weight_agreement
         fidelity = max(0.0, min(1.0, fidelity_raw * penalty * coverage_factor))
 
         return FidelityComponents(
@@ -190,13 +204,17 @@ class AnnotationFidelityScorer:
 def _class_match_score(
     item: PerImageAnnotationItem, gt: GoldenAnnotation
 ) -> float:
-    miner_class = (item.hazard_class or "").lower().strip()
-    gt_class = (gt.hazard_class or "").lower().strip()
-    if miner_class and miner_class == gt_class:
+    from template.miner.geometry import canonical_carbon_class
+
+    miner_c = canonical_carbon_class(item.hazard_class)
+    gt_c = canonical_carbon_class(gt.hazard_class)
+    if miner_c == gt_c:
         return 1.0
-    tree_synonyms = {"tree", "individual_tree", "group_of_trees", "intact_forest"}
-    if miner_class in tree_synonyms and gt_class in tree_synonyms:
-        return 0.95
+    # Partial credit for related vegetation categories
+    if {miner_c, gt_c} <= {"dense_tree", "ordinary_tree"}:
+        return 0.75
+    if {miner_c, gt_c} <= {"plant", "ordinary_tree", "dense_tree"}:
+        return 0.50
     return 0.0
 
 

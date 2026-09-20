@@ -179,6 +179,7 @@ testing/
 artifacts/
 runs/
 subtensor/
+models/
 # ML Models / Checkpoints
 *.pt
 *.pth
