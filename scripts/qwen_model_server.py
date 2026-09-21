@@ -31,6 +31,8 @@ try:
 except ImportError:
     cv2 = None
 
+from template.miner.geometry import canonical_carbon_class, CARBON_WEIGHT_MULTIPLIERS
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -39,20 +41,6 @@ logging.basicConfig(
 logger = logging.getLogger("qwen-server")
 
 app = FastAPI(title="Qwen2.5-VL-3B SOTA Annotation Server", version="1.0.0")
-
-# Carbon weight density multipliers per class
-CARBON_WEIGHT_MULTIPLIERS = {
-    "DenseForest": 0.28,
-    "TreeCover": 0.18,
-    "Mangrove": 0.35,
-    "Canopy": 0.15,
-    "Tree": 0.12,
-    "Agroforestry": 0.14,
-    "Deforestation": 0.00,
-    "DegradedForest": 0.04,
-    "BurnScar": 0.00,
-    "Vegetation": 0.08,
-}
 
 
 class InferImageSpec(BaseModel):
@@ -104,7 +92,7 @@ class QwenAnnotationEngine:
         self,
         qwen_path: str = "models/qwen2.5-vl-3b",
         segformer_path: str = "models/tcd-segformer-mit-b2",
-        detector_path: str = "models/tree_detection_finetuned_selvabox.pt",
+        detector_path: str = "models/tree_detection.pt",
         device: str = "cuda:0" if torch.cuda.is_available() else "cpu",
     ):
         self.device = device
@@ -163,23 +151,26 @@ class QwenAnnotationEngine:
                 logger.info("Loading YOLO tree detection checkpoint %s...", ck)
                 self.detector = YOLO(ck)
                 logger.info("✓ YOLO detector loaded successfully!")
+            elif Path("models/tree_detection.pt").exists():
+                self.detector = YOLO("models/tree_detection.pt")
+                logger.info("✓ Fallback YOLO detector loaded successfully!")
             else:
                 self.detector = None
         except Exception as e:
             logger.warning("Could not load YOLO detector: %s", e)
 
     def analyze_scene_with_qwen(self, pil_img: Image.Image) -> Dict[str, Any]:
-        """Use Qwen2.5-VL for macro-landscape reasoning."""
+        """Use Qwen2.5-VL for macro-landscape, biome, and tree species reasoning."""
         if self.qwen_model is None or self.qwen_processor is None:
-            return {"landscape": "forest", "has_mangroves": False, "canopy_coverage_pct": 15}
+            return {"biome": "taiga_boreal", "tree_species": "Scots Pine", "has_mangroves": False, "has_fields": False}
 
         try:
             prompt = (
-                'Analyze this satellite chip for tree canopies and ecological landscape. '
-                'Respond in compact JSON only: {"landscape": "forest"|"agricultural"|"urban"|"wetland", '
-                '"has_mangroves": true|false, "canopy_coverage_pct": number}'
+                "Analyze this high-resolution aerial forestry satellite chip. "
+                "Classify: 1) biome (taiga_boreal, tropical_rainforest, coastal_mangrove, mixed_deciduous, tree_plantation, agricultural_field). "
+                "2) predominant tree species (e.g. 'Scots Pine', 'Norway Spruce', 'Tropical Broadleaf', 'Mangrove', 'Eucalyptus', 'Oil Palm', 'Deciduous Oak', or 'ordinary_tree'). "
+                "Respond in compact JSON only: {\"biome\": \"...\", \"tree_species\": \"...\", \"has_mangroves\": false, \"has_fields\": false}"
             )
-            # Resize image slightly to keep inference very fast
             w, h = pil_img.size
             scale = min(1.0, 512.0 / max(w, h))
             img_in = pil_img.resize((max(64, int(w * scale)), max(64, int(h * scale)))) if scale < 1.0 else pil_img
@@ -197,14 +188,15 @@ class QwenAnnotationEngine:
             if match:
                 data = json.loads(match.group(0))
                 return {
-                    "landscape": str(data.get("landscape", "forest")).lower(),
+                    "biome": str(data.get("biome", "forest")).lower(),
+                    "tree_species": str(data.get("tree_species", "ordinary_tree")),
                     "has_mangroves": bool(data.get("has_mangroves", False)),
-                    "canopy_coverage_pct": float(data.get("canopy_coverage_pct", 15.0)),
+                    "has_fields": bool(data.get("has_fields", False)),
                 }
         except Exception as e:
             logger.warning("Qwen scene analysis error: %s", e)
 
-        return {"landscape": "forest", "has_mangroves": False, "canopy_coverage_pct": 15}
+        return {"biome": "taiga_boreal", "tree_species": "Scots Pine", "has_mangroves": False, "has_fields": False}
 
     def annotate_image(self, pil_img: Image.Image, image_id: str) -> List[AnnotationItem]:
         """Generate high-fidelity SOTA annotations with Qwen2.5-VL and canopy segmentation."""
@@ -214,8 +206,10 @@ class QwenAnnotationEngine:
 
         # 1. Qwen multimodal scene reasoning
         meta = self.analyze_scene_with_qwen(pil_img)
+        biome = meta.get("biome", "forest")
+        tree_species = meta.get("tree_species", "ordinary_tree")
         has_mangroves = meta.get("has_mangroves", False)
-        landscape = meta.get("landscape", "forest")
+        has_fields = meta.get("has_fields", False)
 
         # 2. SegFormer semantic tree delineation
         seg_mask = None
@@ -224,13 +218,11 @@ class QwenAnnotationEngine:
                 inputs = self.segformer_processor(images=pil_img, return_tensors="pt").to(self.device)
                 with torch.no_grad():
                     outputs = self.segformer_model(**inputs)
-                    upsampled = torch.nn.functional.interpolate(
-                        outputs.logits,
-                        size=(h, w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-                    seg_mask = upsampled.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
+                    small_mask = outputs.logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
+                    if cv2 is not None:
+                        seg_mask = cv2.resize(small_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        seg_mask = np.array(Image.fromarray(small_mask).resize((w, h), resample=Image.NEAREST))
             except Exception as e:
                 logger.warning("SegFormer inference error: %s", e)
                 seg_mask = None
@@ -239,7 +231,7 @@ class QwenAnnotationEngine:
         raw_boxes = []
         if self.detector is not None:
             try:
-                results = self.detector.predict(pil_img, conf=0.18, device=self.device, verbose=False)
+                results = self.detector.predict(pil_img, conf=0.15, device=self.device, verbose=False)
                 if results and len(results) > 0 and results[0].boxes is not None:
                     for b in results[0].boxes:
                         xyxy = [float(v) for v in b.xyxy[0].tolist()]
@@ -304,10 +296,41 @@ class QwenAnnotationEngine:
                 ]
                 poly_area = float(bw * bh)
 
-            hazard_class = "Mangrove" if has_mangroves else ("TreeCover" if landscape == "forest" else "Tree")
+            # Determine fine-grained ecological class
+            if has_mangroves or "mangrove" in biome or "mangrove" in tree_species.lower():
+                hazard_class = "Mangrove"
+            elif any(k in biome for k in ("taiga", "boreal")) or any(k in tree_species.lower() for k in ("pine", "spruce", "conifer")):
+                if poly_area > 2500:
+                    hazard_class = "Dense Taiga Canopy"
+                elif "pine" in tree_species.lower():
+                    hazard_class = "Scots Pine (Boreal Conifer)"
+                else:
+                    hazard_class = "Boreal Conifer"
+            elif any(k in biome for k in ("rainforest", "tropical", "humid")) or "broadleaf" in tree_species.lower():
+                if poly_area > 3000:
+                    hazard_class = "Tropical Emergent Canopy"
+                else:
+                    hazard_class = "Tropical Broadleaf"
+            elif "plantation" in biome or any(k in tree_species.lower() for k in ("eucalyptus", "palm", "rubber", "orchard")):
+                hazard_class = "Eucalyptus Plantation" if "eucalyptus" in tree_species.lower() else "Tree Plantation"
+            elif has_fields or any(k in biome for k in ("field", "agri", "crop")):
+                if poly_area > 3500:
+                    hazard_class = "Agricultural Parcel"
+                else:
+                    hazard_class = "Agroforestry Field"
+            else:
+                # Fallback based on scale
+                if poly_area > 2000:
+                    hazard_class = "dense_tree"
+                elif poly_area < 200:
+                    hazard_class = "plant"
+                else:
+                    hazard_class = "ordinary_tree"
+
+            c_cls = canonical_carbon_class(hazard_class)
+            multiplier = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
             area_ratio = poly_area / img_area
-            mult = CARBON_WEIGHT_MULTIPLIERS.get(hazard_class, 0.15)
-            weight = round(area_ratio * mult, 6)
+            weight = round(area_ratio * multiplier, 6)
 
             annotations.append(
                 AnnotationItem(

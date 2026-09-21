@@ -170,13 +170,15 @@ class AnnotationFidelityScorer:
         class_avg = sum(per_match_class) / n_gt
 
         hallucinated = max(0, len(miner_items) - len(used_miner_idx))
-        # Penalty normalized by relative over-detection ratio so dense satellite scenes with dozens of crowns are not zeroed out.
-        rel_hallucinated = hallucinated / n_gt
-        penalty = (
-            self.hallucination_penalty ** rel_hallucinated
-            if hallucinated > 0
-            else 1.0
-        )
+        # Bounded precision penalty: penalize over-detection proportionately without annihilating
+        # high-recall models on dense high-resolution forestry chips.
+        if hallucinated > 0 and len(used_miner_idx) > 0:
+            precision_factor = len(used_miner_idx) / (len(used_miner_idx) + 0.25 * hallucinated)
+            penalty = max(0.20, precision_factor)
+        elif len(used_miner_idx) == 0:
+            penalty = 0.0
+        else:
+            penalty = 1.0
 
         fidelity_raw = (
             self.iou_weight * iou_avg
@@ -210,11 +212,12 @@ def _class_match_score(
     gt_c = canonical_carbon_class(gt.hazard_class)
     if miner_c == gt_c:
         return 1.0
-    # Partial credit for related vegetation categories
+    # Both are tree crown categories (dense tree vs ordinary tree)
     if {miner_c, gt_c} <= {"dense_tree", "ordinary_tree"}:
-        return 0.75
-    if {miner_c, gt_c} <= {"plant", "ordinary_tree", "dense_tree"}:
-        return 0.50
+        return 0.85
+    # Related vegetation categories (plantations, fields, trees, shrubs)
+    if {miner_c, gt_c} <= {"dense_tree", "ordinary_tree", "plant", "plantation", "field"}:
+        return 0.60
     return 0.0
 
 

@@ -15,26 +15,33 @@ from template.protocol import PerImageAnnotationItem
 
 #: Ecological carbon credit weight multipliers based on CO2 sequestration capacity
 CARBON_WEIGHT_MULTIPLIERS: Dict[str, float] = {
-    "mangrove": 3.5,        # Ultra-high blue carbon sequestration (coastal wetland)
-    "dense_tree": 1.8,      # Mature dense forest canopy / high biomass density
-    "ordinary_tree": 1.0,   # Baseline standard terrestrial tree crown
-    "field": 0.7,           # Agricultural cropland, agroforestry, managed fields
-    "plant": 0.4,           # Woody shrubs, understory perennial plants (not grass)
+    "mangrove": 3.5,            # Ultra-high blue carbon sequestration (coastal wetland)
+    "dense_tree": 1.8,          # Mature dense forest canopy / high biomass density
+    "boreal_conifer": 1.8,      # Boreal taiga conifer (Scots Pine, Norway Spruce)
+    "tropical_broadleaf": 1.8,  # Tropical rainforest canopy / emergent hardwood
+    "plantation": 1.2,          # Managed tree plantation (eucalyptus, palm, orchard)
+    "ordinary_tree": 1.0,       # Baseline standard terrestrial tree crown
+    "field": 0.7,               # Agricultural cropland, agroforestry, managed fields
+    "plant": 0.4,               # Woody shrubs, understory perennial plants (not grass)
 }
 
 
 def canonical_carbon_class(raw_class: str) -> str:
-    """Normalize raw class / hazard label into canonical Carbon MRV taxonomy."""
+    """Normalize raw class / hazard label / tree species into canonical Carbon MRV taxonomy."""
     c = (raw_class or "").lower().strip()
     if any(k in c for k in ("mangrove", "wetland")):
         return "mangrove"
-    if any(k in c for k in ("dense", "group", "intact_forest", "forest", "dense_tree")):
-        return "dense_tree"
-    if any(k in c for k in ("field", "farm", "agri", "crop", "plantation")):
+    if any(k in c for k in ("plantation", "eucalyptus", "oil palm", "rubber", "orchard")):
+        return "plantation"
+    if any(k in c for k in ("field", "farm", "agri", "crop", "cropland", "parcel")):
         return "field"
+    if any(k in c for k in ("conifer", "pine", "spruce", "taiga", "boreal", "fir", "larch")):
+        return "dense_tree"
+    if any(k in c for k in ("broadleaf", "tropical", "rainforest", "rain forest", "emergent", "hardwood", "dense", "group", "intact_forest", "forest", "dense_tree")):
+        return "dense_tree"
     if any(k in c for k in ("plant", "shrub", "regrowth", "understory", "brush")):
         return "plant"
-    if any(k in c for k in ("individual", "ordinary", "tree", "crown")):
+    if any(k in c for k in ("individual", "ordinary", "tree", "crown", "deciduous")):
         return "ordinary_tree"
     return "ordinary_tree"
 
