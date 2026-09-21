@@ -114,7 +114,9 @@ def _resolve_target_axon(self, uid: int):
     port_override = localnet_miner_port_override(hk)
     if port_override is not None:
         patched.port = int(port_override)
-    elif chain_port == 0 or has_local_override:
+    elif chain_port > 0:
+        patched.port = chain_port
+    else:
         patched.port = int(os.getenv("LOCALNET_MINER_PORT", "8091"))
     bt.logging.debug(
         f"Resolved axon uid={uid} hotkey={hk[:16]}... "

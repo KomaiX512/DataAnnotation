@@ -82,7 +82,7 @@ btcli wallet list
 python3 -c "
 import bittensor as bt
 w = bt.wallet(name='validator', hotkey='valhk')
-print('Coldkey SS58:', w.coldkey.ss58_address)
+print('Coldkey SS58:', w.coldkeypub.ss58_address)
 print('Hotkey  SS58:', w.hotkey.ss58_address)
 "
 ```
@@ -109,7 +109,8 @@ btcli wallet transfer \
 
 **Check balance:**
 ```bash
-btcli wallet balance --wallet-name validator --network test
+source .venv-neurons/bin/activate
+python scripts/check_balance.py --wallet.name validator
 ```
 
 ### Register on subnet 498

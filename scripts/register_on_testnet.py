@@ -1,17 +1,19 @@
 import argparse
+import template.compat.bittensor_commit_hotkey  # noqa: F401 — testnet scale composite + balance compatibility
 import bittensor as bt
 
 def main():
     parser = argparse.ArgumentParser(description="Register a wallet on the subnet")
-    parser.add_argument("--wallet.name", dest="wallet_name", required=True, help="Wallet name")
-    parser.add_argument("--wallet.hotkey", dest="wallet_hotkey", required=True, help="Hotkey name")
-    parser.add_argument("--subtensor.network", dest="network", default="test", help="Subtensor network (e.g. test, finney)")
-    parser.add_argument("--subtensor.chain_endpoint", dest="chain_endpoint", default=None, help="Chain endpoint")
+    parser.add_argument("--wallet.name", "--wallet-name", "--wallet_name", dest="wallet_name", required=True, help="Wallet name")
+    parser.add_argument("--wallet.hotkey", "--wallet-hotkey", "--wallet_hotkey", dest="wallet_hotkey", required=True, help="Hotkey name")
+    parser.add_argument("--subtensor.network", "--network", dest="network", default="test", help="Subtensor network (e.g. test, finney)")
+    parser.add_argument("--subtensor.chain_endpoint", "--chain_endpoint", dest="chain_endpoint", default=None, help="Chain endpoint")
     parser.add_argument("--netuid", type=int, default=498, help="Netuid of the subnet")
     
     args = parser.parse_args()
     
-    st = bt.subtensor(network=args.network, chain_endpoint=args.chain_endpoint)
+    target_net = args.chain_endpoint if args.chain_endpoint else args.network
+    st = bt.subtensor(network=target_net)
     wallet = bt.wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
     
     print(f"Connecting to network: {args.network}...")

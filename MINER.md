@@ -95,10 +95,12 @@ source .venv-neurons/bin/activate
 python3 -c "
 import bittensor as bt
 w = bt.wallet(name='miner', hotkey='minerhk')
-print('Coldkey SS58:', w.coldkey.ss58_address)
+print('Coldkey SS58:', w.coldkeypub.ss58_address)
 print('Hotkey  SS58:', w.hotkey.ss58_address)
 "
 ```
+> [!TIP]
+> Accessing `w.coldkeypub.ss58_address` retrieves your public address instantly without requiring your coldkey decryption password.
 
 ---
 
@@ -132,12 +134,16 @@ btcli wallet transfer \
 ```bash
 source .venv-neurons/bin/activate
 
-# btcli balance check may error on some versions; use this Python fallback:
+# Option A: Built-in balance checker (recommended, bypasses testnet scale bugs & password prompts)
+python scripts/check_balance.py --wallet.name miner
+
+# Option B: Direct Python one-liner
 python3 -c "
+import template.compat.bittensor_commit_hotkey
 import bittensor as bt
 sub = bt.subtensor(network='test')
 w = bt.wallet(name='miner')
-balance = sub.get_balance(w.coldkey.ss58_address)
+balance = sub.get_balance(w.coldkeypub.ss58_address)
 print(f'Coldkey balance: {balance}')
 "
 ```
@@ -325,6 +331,21 @@ Expected output:
     "ultralytics_available": true
 }
 ```
+
+**Supported Vision Model Checkpoints:**
+
+Subnet 498 evaluates miners on precision, recall, and polygonal delineation quality. Miners are encouraged to use different specialized vision architectures or checkpoints:
+
+| Model Architecture | Checkpoint Path | Description | Recommended Server Port |
+|---|---|---|---|
+| **YOLOv8 Solafune Tree Detection** | `models/tree_detection.pt` | Specialized canopy crown detector | 8081 |
+| **SelvaBox Finetuned** | `models/tree_detection_finetuned_selvabox.pt` | Optimized for dense tropical forestry | 8082 |
+| **SelvaBox Nano** | `models/tree_detection_yolov8n_selvabox.pt` | Ultra-fast, low-memory footprint | 8083 |
+| **YOLO-World v2** | `yolov8s-worldv2.pt` | Open-vocabulary zero-shot detector | 8084 |
+| **YOLOv8 Instance Segmentation** | `yolov8n-seg.pt` | Precise pixel polygonal masks | 8085 |
+| **YOLOv9 / YOLOv11** | `yolov9c.pt` | High-capacity bounding & OBB representation | 8086 |
+
+To run multiple miners on a single server, assign each miner its own model server port (e.g. 8081-8085) and axon port (e.g. 8091-8095).
 
 ### Path B: `yolo_local` — GPU fine-tuning (requires NVIDIA GPU)
 

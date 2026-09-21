@@ -280,3 +280,17 @@ try:
     Metagraph._apply_metagraph_info = _safe_apply
 except Exception:
     pass
+
+try:
+    _orig_recycle = Subtensor.recycle
+    def _patched_recycle(self, netuid: int, block: Optional[int] = None):
+        call = self.get_hyperparameter(param_name="Burn", netuid=netuid, block=block)
+        if call is None:
+            return None
+        while isinstance(call, (list, tuple)):
+            call = call[0]
+        return Balance.from_rao(int(call))
+    Subtensor.recycle = _patched_recycle
+except Exception:
+    pass
+
