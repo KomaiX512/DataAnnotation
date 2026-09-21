@@ -21,8 +21,9 @@ def check_uid_availability(
     target_ss58 = os.getenv("LOCALNET_TARGET_MINER_SS58", "").strip()
     if target_ss58 and uid < len(metagraph.hotkeys):
         targets = {x.strip() for x in target_ss58.split(",") if x.strip()}
-        if metagraph.hotkeys[uid] in targets:
-            return True
+        if metagraph.hotkeys[uid] not in targets:
+            return False
+        return True
     if os.getenv("ALLOW_NON_SERVING_MINER", "").strip().lower() in ("1", "true", "yes"):
         if uid < len(metagraph.validator_permit) and metagraph.validator_permit[uid]:
             if metagraph.S[uid] > vpermit_tao_limit:
