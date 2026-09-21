@@ -344,7 +344,9 @@ class PerMinerAnnotationScore:
         the total number of hallucinations observed on Golden images."""
         if self.total_hallucinations <= 0:
             return 1.0
-        return float(per_event_penalty ** self.total_hallucinations)
+        n_gt = max(1, self.total_ground_truth)
+        rel_hallucinated = min(5.0, self.total_hallucinations / n_gt)
+        return float(per_event_penalty ** rel_hallucinated)
 
     def weight_for_class(self, hazard_class: str, *, epsilon: float = 1e-4) -> float:
         key = (hazard_class or "").lower().strip()

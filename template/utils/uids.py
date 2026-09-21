@@ -19,8 +19,10 @@ def check_uid_availability(
         bool: True if uid is available, False otherwise
     """
     target_ss58 = os.getenv("LOCALNET_TARGET_MINER_SS58", "").strip()
-    if target_ss58 and uid < len(metagraph.hotkeys) and metagraph.hotkeys[uid] == target_ss58:
-        return True
+    if target_ss58 and uid < len(metagraph.hotkeys):
+        targets = {x.strip() for x in target_ss58.split(",") if x.strip()}
+        if metagraph.hotkeys[uid] in targets:
+            return True
     if os.getenv("ALLOW_NON_SERVING_MINER", "").strip().lower() in ("1", "true", "yes"):
         if uid < len(metagraph.validator_permit) and metagraph.validator_permit[uid]:
             if metagraph.S[uid] > vpermit_tao_limit:
@@ -62,7 +64,8 @@ def get_random_uids(self, k: int, exclude: List[int] = None) -> np.ndarray:
                 candidate_uids.append(uid)
     target_ss58 = os.getenv("LOCALNET_TARGET_MINER_SS58", "").strip()
     if target_ss58:
-        matched = [uid for uid in candidate_uids if self.metagraph.hotkeys[uid] == target_ss58]
+        targets = {x.strip() for x in target_ss58.split(",") if x.strip()}
+        matched = [uid for uid in candidate_uids if self.metagraph.hotkeys[uid] in targets]
         if matched:
             candidate_uids = matched
             avail_uids = [uid for uid in avail_uids if uid in matched]
