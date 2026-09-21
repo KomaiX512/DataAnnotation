@@ -550,21 +550,21 @@ def add_validator_args(cls, parser):
         "--neuron.incentive_temperature",
         type=float,
         help="Temperature for broad softmax incentive shaping.",
-        default=0.25,
+        default=0.20,
     )
 
     parser.add_argument(
         "--neuron.incentive_floor",
         type=float,
         help="Minimum nonzero share for eligible value-adding miners.",
-        default=0.002,
+        default=0.08,
     )
 
     parser.add_argument(
         "--neuron.incentive_min_score",
         type=float,
         help="Minimum EMA score required before a miner receives broad-softmax share.",
-        default=0.05,
+        default=0.0,
     )
 
     parser.add_argument(

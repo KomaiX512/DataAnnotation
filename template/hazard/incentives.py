@@ -24,7 +24,8 @@ def broad_softmax_scores(
         raise ValueError("floor must be non-negative")
 
     raw = np.asarray(scores, dtype=np.float64)
-    eligible = np.isfinite(raw) & (raw >= min_score) & (raw > 0.0)
+    cutoff = min_score if min_score > 0.0 else 0.0
+    eligible = np.isfinite(raw) & (raw >= cutoff) & (raw > 0.0)
     shaped = np.zeros_like(raw, dtype=np.float64)
     if not eligible.any():
         return shaped.astype(np.float32)

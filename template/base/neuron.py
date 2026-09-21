@@ -130,8 +130,9 @@ class BaseNeuron(ABC):
         if self.should_set_weights():
             self.set_weights()
 
-        # Always save state.
-        self.save_state()
+        # Save state once initialized (avoid overwriting saved state with zeros on startup).
+        if getattr(self, "step", 0) > 0:
+            self.save_state()
 
     def check_registered(self):
         # --- Check for registration.

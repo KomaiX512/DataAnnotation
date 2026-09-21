@@ -138,3 +138,25 @@ def test_broad_softmax_scaling_floor_edge_case():
     assert shaped[1] == pytest.approx(shaped[-1])
     assert shaped[0] > 0.0
     assert (shaped >= 0.0).all()
+
+
+def test_broad_softmax_zero_min_score_pays_all_positive_miners():
+    # 5 active miners with varying scores (including small scores below typical thresholds)
+    # and 3 inactive miners with 0.0 score
+    scores = np.array([0.0, 0.0, 0.0, 0.415, 0.0025, 0.0065, 0.0025, 0.0025], dtype=float)
+    shaped = broad_softmax_scores(
+        scores,
+        temperature=0.20,
+        floor=0.08,
+        min_score=0.0,
+    )
+    # Inactive miners receive exact 0
+    assert (shaped[:3] == 0.0).all()
+    # All 5 active miners receive non-zero incentive
+    assert (shaped[3:] > 0.0).all()
+    # All active miners receive at least the floor
+    assert (shaped[3:] >= 0.08).all()
+    # Top miner receives the highest incentive
+    assert shaped[3] == shaped[3:].max()
+    assert abs(float(shaped.sum()) - 1.0) < 1e-6
+
