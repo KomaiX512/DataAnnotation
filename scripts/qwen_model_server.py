@@ -227,30 +227,44 @@ class QwenAnnotationEngine:
                 logger.warning("SegFormer inference error: %s", e)
                 seg_mask = None
 
-        # 3. Detector proposals
-        raw_boxes = []
+        # 3. Detector proposals with surgical instance segmentation masks
+        raw_proposals = []
         if self.detector is not None:
             try:
                 results = self.detector.predict(pil_img, conf=0.15, device=self.device, verbose=False)
                 if results and len(results) > 0 and results[0].boxes is not None:
-                    for b in results[0].boxes:
+                    res = results[0]
+                    has_masks = res.masks is not None and len(res.masks.xy) > 0
+                    for idx, b in enumerate(res.boxes):
                         xyxy = [float(v) for v in b.xyxy[0].tolist()]
                         conf = float(b.conf[0].item()) if hasattr(b, "conf") and b.conf is not None else 0.85
-                        raw_boxes.append((xyxy, conf))
+                        poly_pts = None
+                        if has_masks and idx < len(res.masks.xy):
+                            raw_pts = res.masks.xy[idx]
+                            if len(raw_pts) >= 3 and cv2 is not None:
+                                pts = np.array(raw_pts, dtype=np.float32).reshape(-1, 1, 2)
+                                epsilon = 0.006 * cv2.arcLength(pts, True)
+                                approx = cv2.approxPolyDP(pts, max(0.8, epsilon), True)
+                                if len(approx) >= 3:
+                                    poly_pts = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx]
+                        raw_proposals.append((xyxy, conf, poly_pts))
             except Exception as e:
                 logger.warning("Detector error: %s", e)
 
         # 4. If detector had few proposals, augment with SegFormer contour proposals
-        if len(raw_boxes) < 5 and seg_mask is not None and cv2 is not None:
+        if len(raw_proposals) < 5 and seg_mask is not None and cv2 is not None:
             cnts, _ = cv2.findContours(seg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in cnts:
                 c_area = cv2.contourArea(cnt)
                 if c_area >= 20:
                     bx, by, bw, bh = cv2.boundingRect(cnt)
-                    raw_boxes.append(([float(bx), float(by), float(bx + bw), float(by + bh)], 0.88))
+                    epsilon = 0.008 * cv2.arcLength(cnt, True)
+                    approx = cv2.approxPolyDP(cnt, max(1.0, epsilon), True)
+                    poly_pts = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx] if len(approx) >= 3 else None
+                    raw_proposals.append(([float(bx), float(by), float(bx + bw), float(by + bh)], 0.88, poly_pts))
 
         # 5. Fallback: spectral proposal scan if empty
-        if not raw_boxes and cv2 is not None:
+        if not raw_proposals and cv2 is not None:
             r = np_img[:, :, 0].astype(np.float32)
             g = np_img[:, :, 1].astype(np.float32)
             b = np_img[:, :, 2].astype(np.float32)
@@ -260,10 +274,13 @@ class QwenAnnotationEngine:
             for cnt in cnts:
                 if cv2.contourArea(cnt) >= 25:
                     bx, by, bw, bh = cv2.boundingRect(cnt)
-                    raw_boxes.append(([float(bx), float(by), float(bx + bw), float(by + bh)], 0.75))
+                    epsilon = 0.01 * cv2.arcLength(cnt, True)
+                    approx = cv2.approxPolyDP(cnt, max(1.0, epsilon), True)
+                    poly_pts = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx] if len(approx) >= 3 else None
+                    raw_proposals.append(([float(bx), float(by), float(bx + bw), float(by + bh)], 0.75, poly_pts))
 
         annotations: List[AnnotationItem] = []
-        for box, conf in raw_boxes:
+        for box, conf, inst_poly in raw_proposals:
             x1, y1, x2, y2 = [int(v) for v in box]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
@@ -271,10 +288,14 @@ class QwenAnnotationEngine:
             if bw < 4 or bh < 4:
                 continue
 
-            # Contour polygon extraction
-            poly = None
+            # Contour polygon extraction: use surgical instance mask if available
+            poly = inst_poly
             poly_area = 0.0
-            if seg_mask is not None and cv2 is not None:
+            if poly is not None and len(poly) >= 3 and cv2 is not None:
+                poly_area = float(cv2.contourArea(np.array(poly, dtype=np.float32)))
+
+            # If no instance mask, try SegFormer crop
+            if (poly is None or poly_area <= 0) and seg_mask is not None and cv2 is not None:
                 crop_mask = seg_mask[y1:y2, x1:x2]
                 if np.any(crop_mask):
                     cnts, _ = cv2.findContours(crop_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -282,19 +303,21 @@ class QwenAnnotationEngine:
                         best_cnt = max(cnts, key=cv2.contourArea)
                         c_area = float(cv2.contourArea(best_cnt))
                         if c_area >= 10:
-                            epsilon = 0.015 * cv2.arcLength(best_cnt, True)
+                            epsilon = 0.012 * cv2.arcLength(best_cnt, True)
                             approx = cv2.approxPolyDP(best_cnt, max(1.0, epsilon), True)
-                            poly = [[round(float(pt[0][0] + x1), 2), round(float(pt[0][1] + y1), 2)] for pt in approx]
-                            poly_area = c_area
+                            if len(approx) >= 3:
+                                poly = [[round(float(pt[0][0] + x1), 2), round(float(pt[0][1] + y1), 2)] for pt in approx]
+                                poly_area = c_area
 
+            # If still no contour, generate an 8-point smooth elliptical polygon (never a 4-point rectangle box)
             if poly is None or poly_area <= 0:
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                rx, ry = bw / 2.0, bh / 2.0
                 poly = [
-                    [float(x1), float(y1)],
-                    [float(x2), float(y1)],
-                    [float(x2), float(y2)],
-                    [float(x1), float(y2)],
+                    [round(cx + rx * np.cos(t), 2), round(cy + ry * np.sin(t), 2)]
+                    for t in np.linspace(0, 2 * np.pi, 9)[:-1]
                 ]
-                poly_area = float(bw * bh)
+                poly_area = float(np.pi * rx * ry * 0.85)
 
             # Determine fine-grained ecological class
             if has_mangroves or "mangrove" in biome or "mangrove" in tree_species.lower():

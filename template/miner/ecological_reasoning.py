@@ -227,10 +227,21 @@ class EcologicalVisionEngine:
                     verbose=False,
                 )
                 if results and len(results) > 0 and results[0].boxes is not None:
-                    for b in results[0].boxes:
+                    res = results[0]
+                    has_masks = res.masks is not None and len(res.masks.xy) > 0
+                    for idx, b in enumerate(res.boxes):
                         xyxy = [float(v) for v in b.xyxy[0].tolist()]
                         conf = float(b.conf[0].item()) if hasattr(b, "conf") and b.conf is not None else 0.85
-                        raw_boxes.append((xyxy, conf))
+                        poly_pts = None
+                        if has_masks and idx < len(res.masks.xy):
+                            raw_pts = res.masks.xy[idx]
+                            if len(raw_pts) >= 3 and cv2 is not None:
+                                pts = np.array(raw_pts, dtype=np.float32).reshape(-1, 1, 2)
+                                epsilon = 0.006 * cv2.arcLength(pts, True)
+                                approx = cv2.approxPolyDP(pts, max(0.8, epsilon), True)
+                                if len(approx) >= 3:
+                                    poly_pts = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx]
+                        raw_boxes.append((xyxy, conf, poly_pts))
             except Exception as exc:
                 logger.warning("Neural detection error: %s", exc)
 
@@ -240,18 +251,21 @@ class EcologicalVisionEngine:
             for cnt in seg_cnts:
                 if cv2.contourArea(cnt) >= 25:
                     x, y, w, h = cv2.boundingRect(cnt)
-                    raw_boxes.append(([float(x), float(y), float(x + w), float(y + h)], 0.88))
+                    epsilon = 0.008 * cv2.arcLength(cnt, True)
+                    approx = cv2.approxPolyDP(cnt, max(1.0, epsilon), True)
+                    poly_pts = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx] if len(approx) >= 3 else None
+                    raw_boxes.append(([float(x), float(y), float(x + w), float(y + h)], 0.88, poly_pts))
 
         # Fallback if no model or zero detections: grid-spectral scan
         if not raw_boxes and cv2 is not None:
-            raw_boxes = self._spectral_proposal_scan(np_img, img_w, img_h)
+            raw_boxes = [(b, c, None) for b, c in self._spectral_proposal_scan(np_img, img_w, img_h)]
 
         annotations: List[PerImageAnnotationItem] = []
         total_physical_area = 0.0
         total_carbon_weight = 0.0
         class_stats: Dict[str, Dict[str, float]] = {}
 
-        for box_xyxy, conf in raw_boxes:
+        for box_xyxy, conf, inst_poly in raw_boxes:
             x1, y1, x2, y2 = [int(v) for v in box_xyxy]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(img_w, x2), min(img_h, y2)
@@ -266,10 +280,13 @@ class EcologicalVisionEngine:
             # Combine detector confidence and ecological classification confidence
             final_conf = round(min(1.0, conf * 0.5 + reasoning_conf * 0.5), 4)
 
-            # 5. Extract Flexible Contour Polygon / OBB (SegFormer mask-guided if available)
-            poly = None
+            # 5. Extract Flexible Contour Polygon: use surgical instance mask if available
+            poly = inst_poly
             poly_area = 0.0
-            if seg_mask is not None and cv2 is not None:
+            if poly is not None and len(poly) >= 3 and cv2 is not None:
+                poly_area = float(cv2.contourArea(np.array(poly, dtype=np.float32)))
+
+            if (poly is None or poly_area <= 0) and seg_mask is not None and cv2 is not None:
                 crop_mask = seg_mask[y1:y2, x1:x2]
                 if np.any(crop_mask):
                     cnts, _ = cv2.findContours(crop_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -277,15 +294,22 @@ class EcologicalVisionEngine:
                         best_cnt = max(cnts, key=cv2.contourArea)
                         c_area = float(cv2.contourArea(best_cnt))
                         if c_area >= 10:
-                            epsilon = 0.015 * cv2.arcLength(best_cnt, True)
+                            epsilon = 0.012 * cv2.arcLength(best_cnt, True)
                             approx = cv2.approxPolyDP(best_cnt, max(1.0, epsilon), True)
-                            poly = [[round(float(pt[0][0] + x1), 2), round(float(pt[0][1] + y1), 2)] for pt in approx]
-                            poly_area = c_area
+                            if len(approx) >= 3:
+                                poly = [[round(float(pt[0][0] + x1), 2), round(float(pt[0][1] + y1), 2)] for pt in approx]
+                                poly_area = c_area
 
             if poly is None or poly_area <= 0:
                 poly, poly_area = self._extract_polygon(crop, x1, y1, x2, y2)
             if poly_area <= 0:
-                poly_area = float(bw * bh)
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                rx, ry = bw / 2.0, bh / 2.0
+                poly = [
+                    [round(cx + rx * np.cos(t), 2), round(cy + ry * np.sin(t), 2)]
+                    for t in np.linspace(0, 2 * np.pi, 9)[:-1]
+                ]
+                poly_area = float(np.pi * rx * ry * 0.85)
 
             # 4. Compute Ecological Carbon Weight
             area_ratio = poly_area / img_area
