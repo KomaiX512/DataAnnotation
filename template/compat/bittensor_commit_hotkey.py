@@ -271,13 +271,32 @@ try:
         return []
     Metagraph._get_all_stakes_from_chain = _safe_get_all_stakes
 
-    _orig_apply = Metagraph._apply_metagraph_info
-    def _safe_apply(self, block=None):
-        try:
-            return _orig_apply(self, block=block)
-        except Exception:
-            return None
-    Metagraph._apply_metagraph_info = _safe_apply
+    _orig_apply = getattr(Metagraph, "_apply_metagraph_info", None)
+    if _orig_apply is not None:
+        def _safe_apply(self, block=None):
+            try:
+                return _orig_apply(self, block=block)
+            except Exception:
+                return None
+        Metagraph._apply_metagraph_info = _safe_apply
+
+    _orig_apply_extra = getattr(Metagraph, "_apply_extra_info", None)
+    if _orig_apply_extra is not None:
+        def _safe_apply_extra(self, block: int):
+            try:
+                return _orig_apply_extra(self, block=block)
+            except Exception:
+                return None
+        Metagraph._apply_extra_info = _safe_apply_extra
+
+    _orig_get_metagraph_info = getattr(Subtensor, "get_metagraph_info", None)
+    if _orig_get_metagraph_info is not None:
+        def _safe_get_metagraph_info(self, netuid, mechid=0, block=None):
+            try:
+                return _orig_get_metagraph_info(self, netuid=netuid, mechid=mechid, block=block)
+            except Exception:
+                return None
+        Subtensor.get_metagraph_info = _safe_get_metagraph_info
 except Exception:
     pass
 
