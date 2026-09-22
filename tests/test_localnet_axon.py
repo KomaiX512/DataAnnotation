@@ -71,3 +71,43 @@ def test_resolve_target_axon_external_vs_local(monkeypatch):
     assert res13.ip == "184.174.33.251"
     assert res13.port == 8091
 
+
+def test_resolve_target_axon_lan_endpoint(monkeypatch):
+    from types import SimpleNamespace
+    from template.validator.dual_forward import _resolve_target_axon
+
+    class MockAxon:
+        def __init__(self, ip, port):
+            self.ip = ip
+            self.port = port
+
+    class MockMetagraph:
+        def __init__(self):
+            self.axons = {
+                14: MockAxon("182.176.222.243", 8091),
+            }
+            self.hotkeys = {
+                14: "5FHgYbUVesTVhHh3yQjAQm9cEAthaTpZ4DsUj7BC1mRao43e",
+            }
+
+    mock_self = SimpleNamespace(
+        metagraph=MockMetagraph(),
+        uid=5,
+        config=SimpleNamespace(
+            subtensor=SimpleNamespace(
+                chain_endpoint="wss://test.finney.opentensor.ai:443",
+                network="test",
+            )
+        ),
+    )
+
+    monkeypatch.setenv(
+        "LOCALNET_MINER_PORT_BY_SS58",
+        "5FHgYbUVesTVhHh3yQjAQm9cEAthaTpZ4DsUj7BC1mRao43e=10.1.207.169:8091",
+    )
+
+    res14 = _resolve_target_axon(mock_self, 14)
+    assert res14.ip == "10.1.207.169"
+    assert res14.port == 8091
+
+

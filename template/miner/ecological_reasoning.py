@@ -365,6 +365,7 @@ class EcologicalVisionEngine:
                         approx = cv2.approxPolyDP(c, 0.8, True)
                     if len(approx) < 5:
                         continue
+                    fx, fy, fbw, fbh = cv2.boundingRect(c)
                     poly = [[round(float(pt[0][0]), 2), round(float(pt[0][1]), 2)] for pt in approx]
 
                     area_ratio = c_area / img_area
@@ -383,7 +384,7 @@ class EcologicalVisionEngine:
                     annotations.append(
                         PerImageAnnotationItem(
                             hazard_class="field",
-                            bounding_box=[round(float(x), 2), round(float(y), 2), round(float(x + bw), 2), round(float(y + bh), 2)],
+                            bounding_box=[round(float(fx), 2), round(float(fy), 2), round(float(fx + fbw), 2), round(float(fy + fbh), 2)],
                             polygon=poly,
                             area=round(c_area, 2),
                             weight=item_weight,

@@ -53,7 +53,10 @@ from template.protocol import (
     PerImageAnnotationItem,
     R2AccessCredentials,
 )
-from template.utils.localnet_axon import localnet_miner_port_override
+from template.utils.localnet_axon import (
+    localnet_miner_endpoint_override,
+    localnet_miner_port_override,
+)
 from template.utils.uids import get_random_uids
 
 
@@ -104,6 +107,7 @@ def _resolve_target_axon(self, uid: int):
         or endpoint.startswith("ws://localhost")
         or str(getattr(subtensor_cfg, "network", "")).lower() in ("local", "mock")
     )
+    endpoint_override = localnet_miner_endpoint_override(hk)
     port_override = localnet_miner_port_override(hk)
     has_valid_chain_axon = (
         chain_port > 0 and chain_ip not in ("0", "0.0.0.0", "127.0.0.1", "")
@@ -111,11 +115,11 @@ def _resolve_target_axon(self, uid: int):
 
     # For live networks (testnet, mainnet):
     if not is_local_chain:
-        # If this hotkey is explicitly designated as a co-located local miner, route to loopback
-        if port_override is not None:
+        # If this hotkey is explicitly designated as a co-located local or LAN miner, route accordingly
+        if endpoint_override is not None:
             patched = copy.deepcopy(axon)
-            patched.ip = "127.0.0.1"
-            patched.port = int(port_override)
+            patched.ip = endpoint_override[0]
+            patched.port = endpoint_override[1]
             bt.logging.debug(
                 f"Resolved local SS58 override uid={uid} hotkey={hk[:16]}... -> target_port={patched.port} target_ip={patched.ip}"
             )
