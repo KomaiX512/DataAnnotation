@@ -97,21 +97,36 @@ def _resolve_target_axon(self, uid: int):
     endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
     chain_port = int(getattr(axon, "port", 0) or 0)
     chain_ip = str(getattr(axon, "ip", "") or "")
+    hk = self.metagraph.hotkeys[uid]
 
-    has_valid_chain_axon = chain_port > 0 and chain_ip not in ("0", "0.0.0.0", "")
-    has_local_override = bool(
-        os.getenv("LOCALNET_MINER_PORT_BY_SS58")
-        or os.getenv("LOCALNET_MINER_PORT")
-        or endpoint.startswith("ws://127.0.0.1")
+    is_local_chain = (
+        endpoint.startswith("ws://127.0.0.1")
+        or endpoint.startswith("ws://localhost")
+        or str(getattr(subtensor_cfg, "network", "")).lower() in ("local", "mock")
+    )
+    port_override = localnet_miner_port_override(hk)
+    has_valid_chain_axon = (
+        chain_port > 0 and chain_ip not in ("0", "0.0.0.0", "127.0.0.1", "")
     )
 
-    if has_valid_chain_axon and not has_local_override:
-        return axon
+    # For live networks (testnet, mainnet):
+    if not is_local_chain:
+        # If this hotkey is explicitly designated as a co-located local miner, route to loopback
+        if port_override is not None:
+            patched = copy.deepcopy(axon)
+            patched.ip = "127.0.0.1"
+            patched.port = int(port_override)
+            bt.logging.debug(
+                f"Resolved local SS58 override uid={uid} hotkey={hk[:16]}... -> target_port={patched.port} target_ip={patched.ip}"
+            )
+            return patched
+        # If the miner has a valid public axon on chain, use it directly
+        if has_valid_chain_axon:
+            return axon
 
+    # Fallback for local chain or unroutable chain axon
     patched = copy.deepcopy(axon)
     patched.ip = "127.0.0.1"
-    hk = self.metagraph.hotkeys[uid]
-    port_override = localnet_miner_port_override(hk)
     if port_override is not None:
         patched.port = int(port_override)
     elif chain_port > 0:

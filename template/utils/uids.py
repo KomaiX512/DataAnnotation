@@ -57,15 +57,23 @@ def get_random_uids(self, k: int, exclude: List[int] = None) -> np.ndarray:
             avail_uids.append(uid)
             if uid_is_not_excluded:
                 candidate_uids.append(uid)
-    # When running N physical miners behind a port map, only sample UIDs whose hotkeys are
-    # in the map; otherwise multiple chain UIDs can resolve to the same port and axon
-    # signature verification fails.
-    port_map_hks = localnet_port_map_hotkeys()
-    if port_map_hks:
-        candidate_uids = [
-            uid for uid in candidate_uids if self.metagraph.hotkeys[uid] in port_map_hks
-        ]
-        avail_uids = [uid for uid in avail_uids if self.metagraph.hotkeys[uid] in port_map_hks]
+    # When running N physical miners behind a port map on localnet/mock networks,
+    # only sample UIDs whose hotkeys are in the map to avoid port conflicts.
+    # On public networks (testnet/mainnet), all registered serving miners are sampled.
+    subtensor_cfg = getattr(self.config, "subtensor", None)
+    endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
+    is_local_network = (
+        endpoint.startswith("ws://127.0.0.1")
+        or endpoint.startswith("ws://localhost")
+        or str(getattr(subtensor_cfg, "network", "")).lower() in ("local", "mock")
+    )
+    if is_local_network:
+        port_map_hks = localnet_port_map_hotkeys()
+        if port_map_hks:
+            candidate_uids = [
+                uid for uid in candidate_uids if self.metagraph.hotkeys[uid] in port_map_hks
+            ]
+            avail_uids = [uid for uid in avail_uids if self.metagraph.hotkeys[uid] in port_map_hks]
     # If k is larger than the eligible non-excluded uids, only query eligible miners.
     k = min(k, len(candidate_uids))
     # Check if candidate_uids contain enough for querying, if not grab all avaliable uids

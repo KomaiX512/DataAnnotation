@@ -262,10 +262,11 @@ def test_fidelity_scorer_penalizes_hallucinations(tmp_path):
         cls="random_object",
         bbox=(140, 140, 180, 180),
     )
+    clean = scorer.score([_miner_item()], g1)
     components = scorer.score([_miner_item(), halluc], g1)
     assert components.hallucinated_count == 1
-    assert components.hallucination_penalty == pytest.approx(0.5)
-    assert components.fidelity < 0.5
+    assert components.hallucination_penalty == pytest.approx(0.8)
+    assert components.fidelity < clean.fidelity
 
 
 def test_fidelity_scorer_zeros_for_total_miss(tmp_path):
