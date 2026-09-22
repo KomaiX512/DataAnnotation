@@ -761,6 +761,7 @@ def infer(req: InferRequest):
                             canonical_carbon_class,
                         )
 
+                        has_masks = res.masks is not None and len(res.masks.xy) > 0
                         for b_idx, box in enumerate(boxes):
                             xyxy = box.xyxy[0].tolist()
                             cls_idx = int(box.cls[0].item())
@@ -768,13 +769,27 @@ def infer(req: InferRequest):
                             conf = float(box.conf[0].item()) if hasattr(box, "conf") and box.conf is not None else 1.0
                             x1, y1, x2, y2 = [float(c) for c in xyxy]
 
-                            poly = [
-                                [round(x1, 2), round(y1, 2)],
-                                [round(x2, 2), round(y1, 2)],
-                                [round(x2, 2), round(y2, 2)],
-                                [round(x1, 2), round(y2, 2)],
-                            ]
-                            poly_area = float(max(0.0, (x2 - x1) * (y2 - y1)))
+                            poly = None
+                            poly_area = 0.0
+                            if has_masks and b_idx < len(res.masks.xy):
+                                raw_pts = res.masks.xy[b_idx]
+                                if len(raw_pts) >= 5 and cv2 is not None:
+                                    pts = np.array(raw_pts, dtype=np.float32).reshape(-1, 1, 2)
+                                    epsilon = 0.006 * cv2.arcLength(pts, True)
+                                    approx = cv2.approxPolyDP(pts, max(0.8, epsilon), True)
+                                    if len(approx) >= 5:
+                                        poly = [[round(float(p[0][0]), 2), round(float(p[0][1]), 2)] for p in approx]
+                                        poly_area = float(cv2.contourArea(approx))
+
+                            if poly is None or poly_area <= 0:
+                                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                                rx, ry = max(2.0, (x2 - x1) / 2.0), max(2.0, (y2 - y1) / 2.0)
+                                poly = [
+                                    [round(cx + rx * np.cos(t), 2), round(cy + ry * np.sin(t), 2)]
+                                    for t in np.linspace(0, 2 * np.pi, 13)[:-1]
+                                ]
+                                poly_area = float(np.pi * rx * ry * 0.85)
+
                             canon_cls = canonical_carbon_class(cls_name)
                             mult = CARBON_WEIGHT_MULTIPLIERS.get(canon_cls, 1.0)
                             obj_weight = round((poly_area / img_area) * mult, 6)

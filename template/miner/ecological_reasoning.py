@@ -359,9 +359,12 @@ class EcologicalVisionEngine:
             for c in field_cnts:
                 c_area = float(cv2.contourArea(c))
                 if 1500 <= c_area <= 350000:
-                    x, y, bw, bh = cv2.boundingRect(c)
-                    epsilon = 0.02 * cv2.arcLength(c, True)
-                    approx = cv2.approxPolyDP(c, max(2.0, epsilon), True)
+                    epsilon = 0.005 * cv2.arcLength(c, True)
+                    approx = cv2.approxPolyDP(c, max(1.0, epsilon), True)
+                    if len(approx) < 6:
+                        approx = cv2.approxPolyDP(c, 0.8, True)
+                    if len(approx) < 5:
+                        continue
                     poly = [[round(float(pt[0][0]), 2), round(float(pt[0][1]), 2)] for pt in approx]
 
                     area_ratio = c_area / img_area

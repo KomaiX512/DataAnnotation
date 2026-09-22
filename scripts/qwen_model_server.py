@@ -367,6 +367,55 @@ class QwenAnnotationEngine:
                 )
             )
 
+        # 6. Extract Agricultural Field Parcels (cropland, agroforestry, cultivated plots)
+        if cv2 is not None:
+            try:
+                gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
+                r = np_img[:, :, 0].astype(np.float32)
+                g = np_img[:, :, 1].astype(np.float32)
+                b = np_img[:, :, 2].astype(np.float32)
+                exg = 2.0 * g - r - b
+
+                blur = cv2.GaussianBlur(gray, (15, 15), 0)
+                local_var = cv2.absdiff(gray, blur)
+                field_candidate = (exg > 8.0) & (local_var < 18) & (gray > 35) & (gray < 220)
+                if seg_mask is not None:
+                    field_candidate = field_candidate & (seg_mask == 0)
+
+                field_mask = field_candidate.astype(np.uint8)
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+                field_mask = cv2.morphologyEx(field_mask, cv2.MORPH_OPEN, kernel)
+                field_mask = cv2.morphologyEx(field_mask, cv2.MORPH_CLOSE, kernel)
+
+                field_cnts, _ = cv2.findContours(field_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c in field_cnts:
+                    c_area = float(cv2.contourArea(c))
+                    if 2500 <= c_area <= 500000:
+                        epsilon = 0.005 * cv2.arcLength(c, True)
+                        approx = cv2.approxPolyDP(c, max(1.0, epsilon), True)
+                        if len(approx) < 6:
+                            approx = cv2.approxPolyDP(c, 0.8, True)
+                        if len(approx) < 5:
+                            continue
+                        f_poly = [[round(float(pt[0][0]), 2), round(float(pt[0][1]), 2)] for pt in approx]
+                        area_ratio = c_area / img_area
+                        multiplier = CARBON_WEIGHT_MULTIPLIERS.get("field", 0.7)
+                        f_weight = round(area_ratio * multiplier, 6)
+                        f_cls = "Agroforestry Field" if has_fields else "field"
+                        annotations.append(
+                            AnnotationItem(
+                                image_id=image_id,
+                                hazard_class=f_cls,
+                                bounding_box=[float(x), float(y), float(x + bw), float(y + bh)],
+                                polygon=f_poly,
+                                area=round(c_area, 2),
+                                weight=f_weight,
+                                confidence=0.89,
+                            )
+                        )
+            except Exception as e:
+                logger.warning("Field extraction error: %s", e)
+
         return annotations
 
 
