@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 import bittensor as bt
@@ -22,9 +23,11 @@ _orig_wallet = bt.wallet
 class PasswordWallet(_orig_wallet):
     @property
     def coldkey(self):
-        return self.get_coldkey(password="5121472")
+        pw = os.getenv("BITTENSOR_WALLET_PASSWORD")
+        return self.get_coldkey(password=pw)
     def unlock_coldkey(self):
-        return self.get_coldkey(password="5121472")
+        pw = os.getenv("BITTENSOR_WALLET_PASSWORD")
+        return self.get_coldkey(password=pw)
 bt.wallet = PasswordWallet
 
 

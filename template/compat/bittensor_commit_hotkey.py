@@ -104,10 +104,10 @@ _orig_wallet = bt.wallet
 class PasswordWallet(_orig_wallet):
     @property
     def coldkey(self):
-        pw = os.getenv("BITTENSOR_WALLET_PASSWORD", "5121472")
+        pw = os.getenv("BITTENSOR_WALLET_PASSWORD")
         return self.get_coldkey(password=pw)
     def unlock_coldkey(self):
-        pw = os.getenv("BITTENSOR_WALLET_PASSWORD", "5121472")
+        pw = os.getenv("BITTENSOR_WALLET_PASSWORD")
         return self.get_coldkey(password=pw)
 
 bt.wallet = PasswordWallet
