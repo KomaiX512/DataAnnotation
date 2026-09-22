@@ -120,11 +120,10 @@ def _resolve_target_axon(self, uid: int):
                 f"Resolved local SS58 override uid={uid} hotkey={hk[:16]}... -> target_port={patched.port} target_ip={patched.ip}"
             )
             return patched
-        # If the miner has a valid public axon on chain, use it directly
-        if has_valid_chain_axon:
-            return axon
+        # For all other miners on live networks, use their on-chain axon directly without rerouting to localhost
+        return axon
 
-    # Fallback for local chain or unroutable chain axon
+    # Fallback for local chain (ws://127.0.0.1)
     patched = copy.deepcopy(axon)
     patched.ip = "127.0.0.1"
     if port_override is not None:
@@ -134,7 +133,7 @@ def _resolve_target_axon(self, uid: int):
     else:
         patched.port = int(os.getenv("LOCALNET_MINER_PORT", "8091"))
     bt.logging.debug(
-        f"Resolved axon uid={uid} hotkey={hk[:16]}... "
+        f"Resolved localnet axon uid={uid} hotkey={hk[:16]}... "
         f"chain_port={chain_port} chain_ip={chain_ip} -> target_port={patched.port} target_ip={patched.ip}"
     )
     return patched
