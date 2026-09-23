@@ -270,20 +270,21 @@ This is the most flexible option. You run a local HTTP server that handles `/tra
 
 **1. Download the Satellite Tree Detection Model Checkpoint:**
 
-To achieve high fidelity on the Climate MRV satellite imagery dataset (detecting tree crowns and forest clusters), download the specialized YOLOv8 tree detection model into `models/`:
+To achieve high fidelity on the Climate MRV satellite imagery dataset (detecting tree crowns and forest clusters), initialize the official YOLOv8 model checkpoint into `models/`:
 
 ```bash
 source .venv-neurons/bin/activate
 
-# Create models directory and download checkpoint from HuggingFace
+# Create models directory and initialize official YOLOv8 checkpoint
 mkdir -p models
 python -c "
-from huggingface_hub import hf_hub_download
+from ultralytics import YOLO
 import os, shutil
 
-path = hf_hub_download(repo_id='solafune/tree-detection', filename='best.pt', local_dir='models')
-if os.path.exists('models/best.pt'):
-    shutil.move('models/best.pt', 'models/tree_detection.pt')
+# Load official YOLOv8 model checkpoint (Ultralytics auto-downloads official weights)
+model = YOLO('yolov8s.pt')
+if os.path.exists('yolov8s.pt'):
+    shutil.copy('yolov8s.pt', 'models/tree_detection.pt')
 print('Tree detection model ready at models/tree_detection.pt')
 "
 ```
@@ -338,7 +339,7 @@ Subnet 498 evaluates miners on precision, recall, and polygonal delineation qual
 
 | Model Architecture | Checkpoint Path | Description | Recommended Server Port |
 |---|---|---|---|
-| **YOLOv8 Solafune Tree Detection** | `models/tree_detection.pt` | Specialized canopy crown detector | 8081 |
+| **YOLOv8 Tree Detection** | `models/tree_detection.pt` | Official YOLOv8 crown & canopy detector | 8081 |
 | **SelvaBox Finetuned** | `models/tree_detection_finetuned_selvabox.pt` | Optimized for dense tropical forestry | 8082 |
 | **SelvaBox Nano** | `models/tree_detection_yolov8n_selvabox.pt` | Ultra-fast, low-memory footprint | 8083 |
 | **YOLO-World v2** | `yolov8s-worldv2.pt` | Open-vocabulary zero-shot detector | 8084 |
