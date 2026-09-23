@@ -82,6 +82,7 @@ _ENV_ARG_MAP = {
     "VALIDATOR_NUM_CONCURRENT_FORWARDS": "--neuron.num_concurrent_forwards",
     "COMMERCIAL_DRAW_BOXES": "--neuron.flywheel_commercial_draw_boxes",
     "COMMERCIAL_ANNOTATED_IMAGE_PREFIX": "--neuron.flywheel_commercial_annotated_image_prefix",
+    "ALLOW_DUPLICATE_SUBMISSIONS": "--neuron.allow_duplicate_submissions",
 }
 
 _ENV_FLAG_MAP = {
@@ -767,6 +768,12 @@ def add_validator_args(cls, parser):
         type=str,
         help="Prefix under which annotated images are uploaded in the commercial export.",
         default="commercial/annotated-images/",
+    )
+    parser.add_argument(
+        "--neuron.allow_duplicate_submissions",
+        action="store_true",
+        default=False,
+        help="Allow duplicate annotation submissions from multiple UIDs (localnet testing only). Defaults to False.",
     )
     parser.add_argument(
         "--wandb.project_name",

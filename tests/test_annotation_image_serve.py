@@ -83,6 +83,7 @@ def test_build_camouflaged_annotation_images_opaque_names(tmp_path):
         annotation_image_ids=(uid_img,),
     )
     ephemeral: list[Path] = []
+    token_map: dict[str, str] = {}
     imgs = asyncio.run(
         build_camouflaged_annotation_images(
             corpus=corpus,
@@ -94,13 +95,39 @@ def test_build_camouflaged_annotation_images_opaque_names(tmp_path):
             serving_base_url="",
             jitter_ms_max=0,
             ephemeral_paths=ephemeral,
+            mask_image_ids=True,
+            token_to_real_id=token_map,
         )
     )
     assert len(imgs) == 2
-    assert imgs[0].image_id == gid
+    # Verify image_id is an opaque random token that does not reveal the underlying content hash
+    assert imgs[0].image_id != gid
+    assert imgs[1].image_id != uid_img
+    assert len(imgs[0].image_id) == 32
+    assert token_map[imgs[0].image_id] == gid
+    assert token_map[imgs[1].image_id] == uid_img
+
     for im in imgs:
         url = im.image_url
         assert gid not in url and uid_img not in url
         p = Path(urlparse(url).path)
         assert p.suffix == ".jpg"
         assert p.read_bytes()[:2] == b"\xff\xd8"
+
+    # Test backwards compatibility with mask_image_ids=False
+    unmasked_imgs = asyncio.run(
+        build_camouflaged_annotation_images(
+            corpus=corpus,
+            plan=plan,
+            cache_root=cache,
+            step=1,
+            uid=7,
+            rng=random.Random(99),
+            serving_base_url="",
+            jitter_ms_max=0,
+            ephemeral_paths=ephemeral,
+            mask_image_ids=False,
+        )
+    )
+    assert unmasked_imgs[0].image_id == gid
+    assert unmasked_imgs[1].image_id == uid_img

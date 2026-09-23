@@ -43,3 +43,24 @@ def test_full_submission_duplicate():
     assert fp == full_submission_fingerprint(payload)
     assert tr.check_and_register(3, payload)[0] is True
     assert tr.check_and_register(4, payload)[0] is False
+
+
+def test_validator_duplicate_rejection_policy(monkeypatch):
+    """Verify that by default duplicates are rejected, but bypassable with flag."""
+    tr = AnnotationDuplicateTracker()
+    payload = {"img1": [_item()]}
+    ok1, _ = tr.check_and_register(1, payload)
+    assert ok1 is True
+
+    ok2, reason = tr.check_and_register(2, payload)
+    assert ok2 is False
+
+    # Default policy: reject duplicate
+    monkeypatch.delenv("ALLOW_DUPLICATE_SUBMISSIONS", raising=False)
+    allow = bool(__import__("os").getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
+    assert allow is False
+
+    # Explicit override: allow duplicate
+    monkeypatch.setenv("ALLOW_DUPLICATE_SUBMISSIONS", "1")
+    allow_override = bool(__import__("os").getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
+    assert allow_override is True

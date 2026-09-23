@@ -13,7 +13,7 @@ import asyncio
 import io
 import secrets
 from pathlib import Path
-from typing import List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import bittensor as bt
 
@@ -70,8 +70,10 @@ async def build_camouflaged_annotation_images(
     serving_base_url: str,
     jitter_ms_max: int,
     ephemeral_paths: List[Path],
+    mask_image_ids: bool = True,
+    token_to_real_id: Optional[Dict[str, str]] = None,
 ) -> List[UnlabeledAnnotationImage]:
-    """Materialize per-request annotation images with camouflaged bytes."""
+    """Materialize per-request annotation images with camouflaged bytes and opaque random IDs."""
 
     cache_root = Path(cache_root)
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -93,8 +95,8 @@ async def build_camouflaged_annotation_images(
             )
         raw = path.read_bytes()
         payload = reencode_strip_metadata(raw, rng)
-        token = secrets.token_hex(8)
-        dest = cache_root / f"ann_step{step}_uid{uid}_{idx}_{token}.jpg"
+        token = secrets.token_hex(16)
+        dest = cache_root / f"{token}.jpg"
         dest.write_bytes(payload)
         ephemeral_paths.append(dest)
 
@@ -102,7 +104,7 @@ async def build_camouflaged_annotation_images(
         if creds is not None:
             try:
                 from template.hazard.r2_storage import upload_image_to_r2
-                object_key = f"camouflaged/ann_step{step}_uid{uid}_{idx}_{token}.jpg"
+                object_key = f"camouflaged/{token}.jpg"
                 url = upload_image_to_r2(dest, object_key=object_key, creds=creds)
                 bt.logging.debug(f"Uploaded camouflaged task image to R2: {url}")
             except Exception as e:
@@ -111,7 +113,15 @@ async def build_camouflaged_annotation_images(
         if not url:
             url = public_url_for_local_path(dest, serving_base_url)
 
-        out.append(UnlabeledAnnotationImage(image_url=url, image_id=image_id))
+        if mask_image_ids:
+            miner_image_id = token
+        else:
+            miner_image_id = image_id
+
+        if token_to_real_id is not None:
+            token_to_real_id[miner_image_id] = image_id
+
+        out.append(UnlabeledAnnotationImage(image_url=url, image_id=miner_image_id))
         if jitter_ms_max > 0:
             await asyncio.sleep(rng.uniform(0.0, jitter_ms_max / 1000.0))
 

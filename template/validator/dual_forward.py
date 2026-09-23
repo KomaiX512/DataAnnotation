@@ -227,9 +227,11 @@ async def _dual_flywheel_forward_impl(
 
     synapses_by_uid: Dict[int, AnnotationTask] = {}
     nonces_by_uid: Dict[int, str] = {}
+    token_maps_by_uid: Dict[int, Dict[str, str]] = {}
     for uid in uids:
         task_id = f"flywheel-{self.step}-{uid}"
         nonce = _build_challenge_nonce(self.step, uid, task_id)
+        uid_token_map: Dict[str, str] = {}
         ann_images = await build_camouflaged_annotation_images(
             corpus=corpus,
             plan=round_plan,
@@ -240,7 +242,10 @@ async def _dual_flywheel_forward_impl(
             serving_base_url=serving_base,
             jitter_ms_max=jitter_ms_max,
             ephemeral_paths=ephemeral_annotation_files,
+            mask_image_ids=True,
+            token_to_real_id=uid_token_map,
         )
+        token_maps_by_uid[uid] = uid_token_map
         synapses_by_uid[uid] = AnnotationTask(
             task_id=task_id,
             challenge_nonce=nonce,
@@ -306,13 +311,15 @@ async def _dual_flywheel_forward_impl(
         valid_records: Dict[str, List[PerImageAnnotationItem]] = {}
         expected_ids = {image.image_id for image in synapse.annotation_images}
         version_samples: list[str] = []
+        uid_id_map = token_maps_by_uid.get(uid, {})
         for record in payload.records:
             if record.image_id not in expected_ids:
                 bt.logging.warning(
                     f"event=annotation_flywheel_unexpected_image_id uid={uid} image_id={record.image_id}"
                 )
                 continue
-            valid_records[record.image_id] = list(record.annotations)
+            canonical_image_id = uid_id_map.get(record.image_id, record.image_id)
+            valid_records[canonical_image_id] = list(record.annotations)
             version_samples.append(record.model_version)
         if not valid_records:
             bt.logging.warning(f"event=annotation_flywheel_no_valid_records uid={uid}")
@@ -320,10 +327,19 @@ async def _dual_flywheel_forward_impl(
 
         ok_dedup, dedup_reason = duplicate_tracker.check_and_register(uid, valid_records)
         if not ok_dedup:
-            bt.logging.warning(
-                f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (BYPASSED for localnet)"
-            )
-            # continue
+            allow_dups = bool(
+                getattr(getattr(self, "config", None), "neuron", None)
+                and getattr(self.config.neuron, "allow_duplicate_submissions", False)
+            ) or (os.getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
+            if allow_dups:
+                bt.logging.warning(
+                    f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (BYPASSED by configuration)"
+                )
+            else:
+                bt.logging.warning(
+                    f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (REJECTED)"
+                )
+                continue
 
         annotations_by_uid[uid] = valid_records
         miner_hotkeys[uid] = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else ""
@@ -337,9 +353,12 @@ async def _dual_flywheel_forward_impl(
 
     expected_golden_ids_by_uid = {
         uid: tuple(
-            image.image_id
-            for image in synapses_by_uid[uid].annotation_images
-            if corpus.is_golden(image.image_id)
+            real_id
+            for real_id in (
+                token_maps_by_uid.get(uid, {}).get(image.image_id, image.image_id)
+                for image in synapses_by_uid[uid].annotation_images
+            )
+            if corpus.is_golden(real_id)
         )
         for uid in valid_uids
     }
