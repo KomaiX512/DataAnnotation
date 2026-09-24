@@ -303,22 +303,35 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Copies state of metagraph before syncing.
         previous_metagraph = copy.deepcopy(self.metagraph)
+        previous_hotkeys = list(self.hotkeys)
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
 
-        # Check if the metagraph axon info has changed.
-        if previous_metagraph.axons == self.metagraph.axons:
+        current_hotkeys = list(self.metagraph.hotkeys)
+        hotkey_changes = [
+            uid
+            for uid in range(max(len(previous_hotkeys), len(current_hotkeys)))
+            if (previous_hotkeys[uid] if uid < len(previous_hotkeys) else None)
+            != (current_hotkeys[uid] if uid < len(current_hotkeys) else None)
+        ]
+        # A key can change while its axon metadata stays equal, so handle the
+        # two change signals independently.
+        axons_changed = previous_metagraph.axons != self.metagraph.axons
+        size_changed = len(self.scores) != int(self.metagraph.n)
+        if not axons_changed and not hotkey_changes and not size_changed:
             return
 
         bt.logging.info(
             "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
         )
         # Zero out all hotkeys that have been replaced within overlapping range.
-        overlap = min(len(self.hotkeys), len(self.metagraph.hotkeys))
-        for uid in range(overlap):
-            if self.hotkeys[uid] != self.metagraph.hotkeys[uid]:
+        for uid in hotkey_changes:
+            if uid < len(self.scores):
                 self.scores[uid] = 0
+            old = previous_hotkeys[uid] if uid < len(previous_hotkeys) else None
+            new = current_hotkeys[uid] if uid < len(current_hotkeys) else None
+            self._on_hotkey_changed(uid, old, new)
 
         # Resize scores to match current metagraph size (handle growth and shrink).
         if len(self.scores) != int(self.metagraph.n):
@@ -329,6 +342,9 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Update the hotkeys.
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+
+    def _on_hotkey_changed(self, uid: int, old_hotkey: str | None, new_hotkey: str | None) -> None:
+        """Subclass hook for discarding hotkey-owned state when a UID changes owner."""
 
     def update_scores(self, rewards: np.ndarray, uids: List[int]):
         """Performs exponential moving average on the scores based on the rewards received from the miners."""
@@ -375,6 +391,9 @@ class BaseValidatorNeuron(BaseNeuron):
         self.scores: np.ndarray = (
             alpha * scattered_rewards + (1 - alpha) * self.scores
         )
+        # Remove float32 denormal tails so inactive miners eventually become
+        # ineligible instead of retaining a permanent positive score.
+        self.scores[self.scores < 1e-4] = 0.0
         bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
     def save_state(self):

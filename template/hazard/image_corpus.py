@@ -100,6 +100,7 @@ class GoldenImage:
     width: int
     height: int
     annotations: Tuple[GoldenAnnotation, ...]
+    classification_label: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -762,6 +763,7 @@ def golden_image_to_jsonable(record: GoldenImage) -> dict:
         "width": record.width,
         "height": record.height,
         "annotations": [golden_annotation_to_jsonable(a) for a in record.annotations],
+        "classification_label": record.classification_label,
     }
 
 

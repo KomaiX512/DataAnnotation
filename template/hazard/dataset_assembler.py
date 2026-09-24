@@ -19,23 +19,31 @@ from template.hazard.image_corpus import ImageCorpus
 from template.protocol import PerImageAnnotationItem, R2AccessCredentials
 
 _BACKGROUND_CLASS = "_background"
-_DEFAULT_ACCEPT_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", "0.9"))
+_DEFAULT_ACCEPT_CONFIDENCE = max(
+    0.9, min(1.0, float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", "0.9")))
+)
 _DEFAULT_ACCEPT_SEVERITY_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_SEVERITY_CONFIDENCE", "0.8"))
-_DEFAULT_MIN_VOTERS = int(os.getenv("DEFAULT_MIN_VOTERS", "2"))
-_DEFAULT_MIN_MEAN_IOU_TO_MEDIAN = float(os.getenv("DEFAULT_MIN_MEAN_IOU_TO_MEDIAN", "0.7"))
+_DEFAULT_MIN_VOTERS = max(3, int(os.getenv("DEFAULT_MIN_VOTERS", "3")))
+_DEFAULT_MIN_OBJECT_VOTES = max(3, int(os.getenv("DEFAULT_MIN_OBJECT_VOTES", "3")))
+_MIN_OBJECT_SUPPORT_RATIO = 0.80
+_MAX_AUTO_ACCEPT_BOX_AREA_RATIO = 0.50
+
+
+def _read_unit_interval_env(name: str, default: str) -> float:
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number in [0, 1]") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be a finite number in [0, 1]")
+    return value
+
+
+_DEFAULT_MIN_MEAN_IOU_TO_MEDIAN = _read_unit_interval_env(
+    "DEFAULT_MIN_MEAN_IOU_TO_MEDIAN", "0.7"
+)
 _EPS = 1e-9
 
-# Single-miner fallback — adopt annotations from a lone reliable miner
-# rather than escalating (which makes the subnet look broken for early adopters).
-_FALLBACK_SINGLE_MINER_ENABLED = os.getenv(
-    "FALLBACK_SINGLE_MINER_ENABLED", "1"
-).strip().lower() in ("1", "true", "yes")
-_FALLBACK_SINGLE_MINER_MIN_RELIABILITY = float(
-    os.getenv("FALLBACK_SINGLE_MINER_MIN_RELIABILITY", "0.05")
-)
-_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL = os.getenv(
-    "FALLBACK_SINGLE_MINER_AGGREGATION_LABEL", "single_miner_fallback_v1"
-).strip()
 
 
 @dataclass(frozen=True)
@@ -124,6 +132,9 @@ class WinningAnnotation:
     tree_coverage_ratio: Optional[float] = None
     tree_coverage_percentage: Optional[float] = None
     tree_count: Optional[int] = None
+    # Set only by a separate validator/human ground-truth audit. Peer consensus
+    # on an unlabeled image is not sufficient evidence for paid adoption.
+    ground_truth_verified: bool = False
 
     def to_jsonable(self) -> dict:
         payload = {
@@ -140,6 +151,7 @@ class WinningAnnotation:
             "width": int(self.width),
             "height": int(self.height),
             "is_golden": bool(self.is_golden),
+            "ground_truth_verified": bool(self.ground_truth_verified),
             "aggregation_method": self.aggregation_method,
             "reliability_window": self.reliability_window,
             "acceptance_thresholds": self.acceptance_thresholds,
@@ -160,7 +172,7 @@ class WinningAnnotation:
 
 @dataclass
 class AdoptionLedger:
-    """Tracks per-uid adoption counts and contribution-based credits."""
+    """Tracks only independently ground-truth-verified adoption credits."""
 
     adoption_counts: Dict[int, int] = field(default_factory=dict)
     last_round_counts: Dict[int, int] = field(default_factory=dict)
@@ -172,7 +184,14 @@ class AdoptionLedger:
         last_counts: Dict[int, int] = {}
         last_contrib: Dict[int, float] = {}
         for winner in winners:
-            if winner.escalation_required:
+            # Golden images measure individual quality; counting their winner
+            # again as an adoption would double-pay the same signal and make
+            # ties depend on iteration order.
+            if (
+                winner.escalation_required
+                or winner.is_golden
+                or not winner.ground_truth_verified
+            ):
                 continue
             self.adoption_counts[winner.chosen_uid] = self.adoption_counts.get(winner.chosen_uid, 0) + 1
             last_counts[winner.chosen_uid] = last_counts.get(winner.chosen_uid, 0) + 1
@@ -182,6 +201,13 @@ class AdoptionLedger:
         self.last_round_counts = last_counts
         self.last_round_contributions = last_contrib
         self.rounds_observed += 1
+
+    def reset_uid(self, uid: int) -> None:
+        for bucket in (
+            self.adoption_counts, self.last_round_counts,
+            self.adoption_contributions, self.last_round_contributions,
+        ):
+            bucket.pop(uid, None)
 
     def adoption_share(self) -> Dict[int, float]:
         total = float(sum(self.adoption_counts.values())) or 1.0
@@ -241,6 +267,7 @@ class DatasetAssembler:
         per_miner_scores: Mapping[int, PerMinerAnnotationScore],
         annotations_by_uid: Mapping[int, Mapping[str, Sequence[PerImageAnnotationItem]]],
         miner_hotkeys: Mapping[int, str],
+        miner_identity_keys: Mapping[int, str] | None = None,
         model_versions: Mapping[int, str],
         timestamps: Mapping[int, str],
     ) -> List[WinningAnnotation]:
@@ -253,10 +280,36 @@ class DatasetAssembler:
         winners: List[WinningAnnotation] = []
         for image_id in sorted(all_image_ids):
             is_golden = self.corpus.is_golden(image_id)
+            submitters_by_identity: Dict[str, List[int]] = {}
+            for uid, by_image in annotations_by_uid.items():
+                if image_id not in by_image:
+                    continue
+                identity = str(
+                    (miner_identity_keys or {}).get(uid)
+                    or miner_hotkeys.get(uid)
+                    or f"uid:{uid}"
+                ).strip()
+                if not identity:
+                    identity = f"uid:{uid}"
+                submitters_by_identity.setdefault(identity, []).append(uid)
+
+            # One coldkey is one independent voter, even if its owner registers
+            # multiple hotkeys. Prefer that owner's highest Golden reliability;
+            # UID breaks ties so selection is deterministic.
+            independent_uids = [
+                max(
+                    group,
+                    key=lambda uid: (
+                        per_miner_scores[uid].average_score()
+                        if uid in per_miner_scores else 0.0,
+                        -uid,
+                    ),
+                )
+                for group in submitters_by_identity.values()
+            ]
             image_votes = {
-                uid: list(by_image.get(image_id, []))
-                for uid, by_image in annotations_by_uid.items()
-                if by_image.get(image_id) is not None
+                uid: list(annotations_by_uid[uid][image_id])
+                for uid in independent_uids
             }
             width, height = self._image_dims(image_id)
             image_url = self._image_url(image_id)
@@ -266,7 +319,7 @@ class DatasetAssembler:
                 # Golden rows are scoring-only; keep compact lane.
                 best_uid = -1
                 best_score = -1.0
-                for uid, miner_score in per_miner_scores.items():
+                for uid, miner_score in sorted(per_miner_scores.items()):
                     score = miner_score.fidelity_scores_by_image_id.get(image_id, 0.0)
                     if score > best_score:
                         best_uid = uid
@@ -286,7 +339,7 @@ class DatasetAssembler:
                             escalation_required=False,
                             escalation_reason=None,
                             accepted_objects=[],
-                            miner_contribution_scores={int(best_uid): 1.0},
+                            miner_contribution_scores={},
                             reliability_window=self._reliability_window(timestamps),
                             acceptance_thresholds=self._acceptance_thresholds(),
                             validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
@@ -313,7 +366,7 @@ class DatasetAssembler:
             )
 
             img_area = float(max(1, width * height))
-            total_tree_area = 0.0
+            coverage_boxes: List[Tuple[float, float, float, float]] = []
             total_carbon_weight = 0.0
             for obj in accepted_objs:
                 if obj.accepted_hazard_class and obj.accepted_hazard_class != "_background":
@@ -322,12 +375,14 @@ class DatasetAssembler:
                                  (obj.fused_bounding_box[3] - obj.fused_bounding_box[1]))
                         if obj.fused_bounding_box and len(obj.fused_bounding_box) == 4 else 0.0
                     )
-                    total_tree_area += area
+                    if obj.fused_bounding_box and len(obj.fused_bounding_box) == 4:
+                        coverage_boxes.append(tuple(obj.fused_bounding_box))
                     c_cls = canonical_carbon_class(obj.accepted_hazard_class)
                     mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
                     total_carbon_weight += (area / img_area) * mult
 
             net_weight = round(total_carbon_weight, 6)
+            total_tree_area = _rectangle_union_area(coverage_boxes)
             coverage_ratio = min(1.0, max(0.0, total_tree_area / img_area))
             coverage_pct = round(coverage_ratio * 100.0, 2)
             tree_cnt = len([o for o in accepted_objs if o.accepted_hazard_class and o.accepted_hazard_class != "_background"])
@@ -352,7 +407,7 @@ class DatasetAssembler:
                     validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
                     timestamp=str(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
                     net_weight=net_weight,
-                    tree_coverage_ratio=net_weight,
+                    tree_coverage_ratio=coverage_ratio,
                     tree_coverage_percentage=coverage_pct,
                     tree_count=tree_cnt,
                 )
@@ -643,9 +698,14 @@ class DatasetAssembler:
     def _class_priors(self) -> Dict[str, float]:
         counts: Dict[str, float] = {}
         alpha = 1.1
+        from template.miner.geometry import canonical_annotation_class
+
         for image in self.corpus.golden_images():
+            if image.classification_label:
+                cls = canonical_annotation_class(image.classification_label)
+                counts[cls] = counts.get(cls, 0.0) + 1.0
             for ann in image.annotations:
-                cls = (ann.hazard_class or "").lower().strip()
+                cls = canonical_annotation_class(ann.hazard_class)
                 if not cls:
                     continue
                 counts[cls] = counts.get(cls, 0.0) + 1.0
@@ -660,6 +720,10 @@ class DatasetAssembler:
             "confidence": _DEFAULT_ACCEPT_CONFIDENCE,
             "severity_confidence": _DEFAULT_ACCEPT_SEVERITY_CONFIDENCE,
             "min_voters": float(_DEFAULT_MIN_VOTERS),
+            "min_independent_voters": float(_DEFAULT_MIN_VOTERS),
+            "min_object_votes": float(_DEFAULT_MIN_OBJECT_VOTES),
+            "min_object_support_ratio": _MIN_OBJECT_SUPPORT_RATIO,
+            "max_auto_accept_box_area_ratio": _MAX_AUTO_ACCEPT_BOX_AREA_RATIO,
             "min_mean_iou_to_median": _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN,
         }
 
@@ -680,72 +744,9 @@ class DatasetAssembler:
     ) -> dict:
         miner_ids = sorted(image_votes.keys())
         if len(miner_ids) < 2:
-            sole_uid = miner_ids[0] if miner_ids else -1
-            # --- Single-miner fallback policy ---
-            if (
-                _FALLBACK_SINGLE_MINER_ENABLED
-                and sole_uid >= 0
-                and image_votes.get(sole_uid)
-            ):
-                sole_score = per_miner_scores.get(sole_uid)
-                sole_reliability = (
-                    sole_score.average_score() if sole_score else 0.0
-                )
-                if sole_reliability >= _FALLBACK_SINGLE_MINER_MIN_RELIABILITY:
-                    # Adopt the lone miner's annotations directly.
-                    sole_items = image_votes[sole_uid]
-                    fallback_objects: List[AggregatedObject] = []
-                    for idx, item in enumerate(sole_items):
-                        cls = _safe_class(item.hazard_class)
-                        from template.hazard.image_corpus import _severity_for_label
-                        sev = _severity_for_label(cls)
-                        box = tuple(float(v) for v in item.bounding_box)
-                        vote = MinerVote(
-                            miner_uid=sole_uid,
-                            miner_hotkey=str(miner_hotkeys.get(sole_uid, "")),
-                            class_voted=cls,
-                            severity_voted=sev,
-                            confidence=float(
-                                sole_score.weight_for_class(cls)
-                                if sole_score else 1e-4
-                            ),
-                            bounding_box=box,
-                            reliability_weight_at_aggregation=float(
-                                sole_score.weight_for_class(cls)
-                                if sole_score else 1e-4
-                            ),
-                        )
-                        fallback_objects.append(
-                            AggregatedObject(
-                                object_cluster_id=f"{image_id}-fb-{idx}",
-                                accepted_hazard_class=cls,
-                                accepted_severity=sev,
-                                confidence=sole_reliability,
-                                severity_confidence=sole_reliability,
-                                class_posterior_distribution={cls: sole_reliability},
-                                severity_posterior_distribution={sev: 1.0},
-                                fused_bounding_box=box,
-                                fused_polygon=item.polygon,
-                                area=item.area,
-                                weight=item.weight,
-                                spatial_mean_iou_to_median=1.0,
-                                miner_votes=[vote],
-                                escalation_reason=None,
-                                aggregation_method=_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL,
-                            )
-                        )
-                    return {
-                        "score": float(sole_reliability),
-                        "chosen_uid": sole_uid,
-                        "objects": fallback_objects,
-                        "escalation_required": False,
-                        "escalation_reason": None,
-                        "miner_contribution_scores": {sole_uid: 1.0},
-                    }
-            # Fallback disabled or miner below threshold — escalate.
             return {
                 "score": 0.0,
-                "chosen_uid": sole_uid,
+                "chosen_uid": miner_ids[0] if miner_ids else -1,
                 "objects": [],
                 "escalation_required": True,
                 "escalation_reason": "only_one_miner",
@@ -783,16 +784,51 @@ class DatasetAssembler:
                 accepted_confidences.append(obj.confidence)
                 for uid, impact in impacts.items():
                     contributions[uid] = contributions.get(uid, 0.0) + float(impact)
+        overlapping_clusters: set[int] = set()
+        for left_index, left in enumerate(objects):
+            if not left.accepted_hazard_class or not left.fused_bounding_box:
+                continue
+            for right_index in range(left_index + 1, len(objects)):
+                right = objects[right_index]
+                if (
+                    right.accepted_hazard_class
+                    and right.fused_bounding_box
+                    and iou_xyxy(left.fused_bounding_box, right.fused_bounding_box) > 0.0
+                ):
+                    overlapping_clusters.update((left_index, right_index))
+        if overlapping_clusters:
+            reason = "overlapping_object_clusters_requires_review"
+            escalations.append(reason)
+            for index in overlapping_clusters:
+                objects[index] = replace(
+                    objects[index],
+                    accepted_hazard_class=None,
+                    accepted_severity=None,
+                    confidence=0.0,
+                    severity_confidence=0.0,
+                    fused_bounding_box=None,
+                    escalation_reason=reason,
+                )
         if escalations:
             return {
                 "score": 0.0,
-                "chosen_uid": max(contributions.items(), key=lambda x: x[1])[0] if contributions else -1,
+                "chosen_uid": max(
+                    contributions.items(), key=lambda x: (x[1], -x[0])
+                )[0] if contributions else -1,
                 "objects": objects,
                 "escalation_required": True,
                 "escalation_reason": ";".join(sorted(set(escalations))),
-                "miner_contribution_scores": contributions,
+                "miner_contribution_scores": {},
             }
-        chosen_uid = max(contributions.items(), key=lambda x: x[1])[0] if contributions else -1
+        total_contribution = sum(contributions.values())
+        if total_contribution > 0.0:
+            contributions = {
+                uid: value / total_contribution
+                for uid, value in contributions.items()
+            }
+        chosen_uid = max(
+            contributions.items(), key=lambda x: (x[1], -x[0])
+        )[0] if contributions else -1
         score = float(sum(accepted_confidences) / max(1, len(accepted_confidences)))
         return {
             "score": score,
@@ -891,12 +927,30 @@ class DatasetAssembler:
 
         fused_box, mean_iou_to_median, _box_count = self._fuse_box(per_miner_votes)
         escalation_reason = None
-        if conf < _DEFAULT_ACCEPT_CONFIDENCE:
+        class_support_uids = [
+            uid
+            for uid, item in vote_by_miner.items()
+            if _safe_class(item.hazard_class) == accepted_class
+        ]
+        class_support_ratio = len(class_support_uids) / max(1, len(all_miner_ids))
+        if len(class_support_uids) < _DEFAULT_MIN_OBJECT_VOTES:
+            escalation_reason = "insufficient_object_votes"
+        elif class_support_ratio < _MIN_OBJECT_SUPPORT_RATIO:
+            escalation_reason = "insufficient_object_support_ratio"
+        elif conf < _DEFAULT_ACCEPT_CONFIDENCE:
             escalation_reason = "low_class_confidence"
         elif len(all_miner_ids) < _DEFAULT_MIN_VOTERS:
             escalation_reason = "insufficient_miners_on_image"
         elif mean_iou_to_median < _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN:
             escalation_reason = "high_spatial_disagreement"
+        elif fused_box is not None:
+            image_width, image_height = self._image_dims(image_id)
+            image_area = float(max(1, image_width * image_height))
+            box_area = max(0.0, fused_box[2] - fused_box[0]) * max(
+                0.0, fused_box[3] - fused_box[1]
+            )
+            if box_area / image_area >= _MAX_AUTO_ACCEPT_BOX_AREA_RATIO:
+                escalation_reason = "large_box_requires_review"
 
         if escalation_reason is not None:
             accepted_class = None
@@ -907,17 +961,18 @@ class DatasetAssembler:
 
         impacts: Dict[int, float] = {}
         if escalation_reason is None and accepted_class is not None:
-            full_conf = float(class_post.get(accepted_class, 0.0))
-            for uid in all_miner_ids:
-                reduced = self._posterior_without_uid(
-                    uid_to_remove=uid,
-                    all_miner_ids=all_miner_ids,
-                    vote_by_miner=vote_by_miner,
-                    per_miner_scores=per_miner_scores,
-                    class_labels=class_labels,
-                    priors=priors,
+            support_weights: Dict[int, float] = {}
+            for uid in class_support_uids:
+                score = per_miner_scores.get(uid)
+                support_weights[uid] = (
+                    score.weight_for_class(accepted_class) if score is not None else 1e-4
                 )
-                impacts[uid] = max(0.0, full_conf - float(reduced.get(accepted_class, 0.0)))
+            total_support = sum(support_weights.values())
+            if total_support > 0.0:
+                impacts = {
+                    uid: weight / total_support
+                    for uid, weight in support_weights.items()
+                }
 
         best_item = None
         best_weight = -1.0
@@ -928,11 +983,34 @@ class DatasetAssembler:
                 best_weight = w
                 best_item = item
 
-        fused_poly = best_item.polygon if best_item is not None else None
-        obj_area = best_item.area if best_item is not None else None
-        obj_weight = best_item.weight if best_item is not None else None
-        if obj_area is None and fused_box is not None:
-            obj_area = round(float(max(0.0, (fused_box[2] - fused_box[0]) * (fused_box[3] - fused_box[1]))), 2)
+        # We have no validator-side polygon ground truth for annotation-pool
+        # images, so do not export an unverified miner contour as if it were a
+        # fused/validated mask. Geometry metrics are derived from the fused box;
+        # miner-provided area and weight are never copied into accepted output.
+        fused_poly = None
+        obj_area = None
+        obj_weight = None
+        if fused_box is not None:
+            obj_area = round(
+                max(0.0, (fused_box[2] - fused_box[0]) * (fused_box[3] - fused_box[1])),
+                2,
+            )
+            width, height = self._image_dims(image_id)
+            image_area = float(max(1, width * height))
+            metric_class = accepted_class or (
+                _safe_class(best_item.hazard_class) if best_item is not None else _BACKGROUND_CLASS
+            )
+            from template.miner.geometry import (
+                CARBON_WEIGHT_MULTIPLIERS,
+                canonical_carbon_class,
+            )
+
+            carbon_class = canonical_carbon_class(metric_class)
+            obj_weight = round(
+                (obj_area / image_area)
+                * CARBON_WEIGHT_MULTIPLIERS.get(carbon_class, 1.0),
+                6,
+            )
 
         return AggregatedObject(
             object_cluster_id=cluster_id,
@@ -1085,7 +1163,9 @@ class DatasetAssembler:
 
 
 def _safe_class(value: str) -> str:
-    return (value or "").lower().strip() or _BACKGROUND_CLASS
+    from template.miner.geometry import canonical_annotation_class
+
+    return canonical_annotation_class(value) if value else _BACKGROUND_CLASS
 
 
 def _normalize_dict(values: Mapping[str, float]) -> Dict[str, float]:
@@ -1094,6 +1174,52 @@ def _normalize_dict(values: Mapping[str, float]) -> Dict[str, float]:
         n = max(1, len(values))
         return {k: 1.0 / n for k in values.keys()}
     return {k: float(max(0.0, v) / total) for k, v in values.items()}
+
+
+def _rectangle_union_area(
+    boxes: Sequence[Tuple[float, float, float, float]],
+) -> float:
+    """Exact union area for axis-aligned boxes, so overlaps count once."""
+    events: List[Tuple[float, int, float, float]] = []
+    for x1, y1, x2, y2 in boxes:
+        if x2 <= x1 or y2 <= y1:
+            continue
+        events.append((x1, 1, y1, y2))
+        events.append((x2, -1, y1, y2))
+    if not events:
+        return 0.0
+    events.sort(key=lambda item: item[0])
+    active: List[Tuple[float, float]] = []
+    area = 0.0
+    previous_x = events[0][0]
+    index = 0
+    while index < len(events):
+        x = events[index][0]
+        intervals = sorted(active)
+        covered_y = 0.0
+        if intervals:
+            merged_start, merged_end = intervals[0]
+            for start, end in intervals[1:]:
+                if start <= merged_end:
+                    merged_end = max(merged_end, end)
+                else:
+                    covered_y += merged_end - merged_start
+                    merged_start, merged_end = start, end
+            covered_y += merged_end - merged_start
+        area += max(0.0, x - previous_x) * covered_y
+        while index < len(events) and events[index][0] == x:
+            _, direction, y1, y2 = events[index]
+            interval = (y1, y2)
+            if direction > 0:
+                active.append(interval)
+            else:
+                try:
+                    active.remove(interval)
+                except ValueError:
+                    pass
+            index += 1
+        previous_x = x
+    return float(max(0.0, area))
 
 
 def _softmax_dict(logits: Mapping[str, float]) -> Dict[str, float]:

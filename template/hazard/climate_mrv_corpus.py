@@ -35,6 +35,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -473,20 +474,10 @@ def _load_from_fallback_chips(
             if mrv_class not in CLIMATE_MRV_CLASSES:
                 mrv_class = "intact_forest"
 
-            raw_anns = label_info.get("annotations")
-            golden_anns = None
-            if raw_anns and isinstance(raw_anns, list):
-                golden_anns = []
-                for ann in raw_anns:
-                    h_class = str(ann.get("hazard_class") or mrv_class).strip()
-                    bbox = tuple(ann.get("bounding_box", [0, 0, 1024, 1024]))
-                    golden_anns.append(
-                        GoldenAnnotation(
-                            hazard_class=h_class,
-                            bounding_box=bbox,
-                            severity=severity_for_mrv_class(h_class),
-                        )
-                    )
+            width, height = _image_size(chip_bytes)
+            golden_anns = _manifest_box_annotations(
+                label_info.get("annotations"), mrv_class, width, height
+            )
             _register_golden_chip(corpus, chip_bytes, mrv_class, cfg, lon=0.0, lat=0.0, annotations=golden_anns)
             loaded_golden += 1
 
@@ -509,21 +500,12 @@ def _load_from_fallback_chips(
             label_info = train_pool_labels.get(chip_path.name) or {}
             mrv_class = str(label_info.get("class") or "intact_forest").strip().lower()
             raw_anns = label_info.get("annotations")
-            tp_anns = []
-            if raw_anns and isinstance(raw_anns, list):
-                for ann in raw_anns:
-                    h_class = str(ann.get("hazard_class") or mrv_class).strip()
-                    bbox = tuple(ann.get("bounding_box", [0, 0, 1024, 1024]))
-                    tp_anns.append(
-                        GoldenAnnotation(
-                            hazard_class=h_class,
-                            bounding_box=bbox,
-                            severity=severity_for_mrv_class(h_class),
-                        )
-                    )
+            width, height = _image_size(chip_bytes)
+            tp_anns = _manifest_box_annotations(
+                label_info.get("annotations"), mrv_class, width, height
+            ) or []
             image_id = hashlib.sha256(chip_bytes).hexdigest()
             cached_path = corpus._materialize_image(image_id, "jpg", chip_bytes)
-            width, height = _image_size(chip_bytes)
             tp_img = GoldenImage(
                 image_id=image_id,
                 image_path=cached_path,
@@ -643,33 +625,69 @@ def _register_golden_chip(
     lat: float,
     annotations: Optional[Sequence[GoldenAnnotation]] = None,
 ) -> None:
-    """Cache chip bytes and add to the Golden Set with fine-grained bounding boxes."""
+    """Cache a Golden chip with boxes when supplied, otherwise a class-only label."""
     image_id = hashlib.sha256(chip_bytes).hexdigest()
     if image_id in corpus._golden_index:
         return
 
     cached_path = corpus._materialize_image(image_id, "jpg", chip_bytes)
     width, height = _image_size(chip_bytes)
-    if not annotations:
-        severity = severity_for_mrv_class(mrv_class)
-        annotations = (
-            GoldenAnnotation(
-                hazard_class=mrv_class,
-                bounding_box=(0, 0, width, height),   # whole-chip bounding box
-                severity=severity,
-            ),
-        )
+    classification_label = None if annotations else mrv_class
+    annotations = tuple(annotations or ())
     golden = GoldenImage(
         image_id=image_id,
         image_path=cached_path,
         image_url=corpus._image_url(cached_path),
         width=width,
         height=height,
-        annotations=tuple(annotations),
+        annotations=annotations,
+        classification_label=classification_label,
     )
     corpus._golden.append(golden)
     corpus._golden_index[image_id] = golden
     corpus._all_image_index[image_id] = cached_path
+
+
+def _manifest_box_annotations(
+    raw_annotations: object,
+    default_class: str,
+    width: int,
+    height: int,
+) -> Optional[List[GoldenAnnotation]]:
+    """Load only explicit, finite, in-image boxes from a label manifest.
+
+    A class-only row remains a class-only Golden target; missing geometry is
+    never silently expanded to the full chip.
+    """
+    if not isinstance(raw_annotations, list):
+        return None
+    annotations: List[GoldenAnnotation] = []
+    for row in raw_annotations:
+        if not isinstance(row, dict):
+            continue
+        raw_box = row.get("bounding_box")
+        if not isinstance(raw_box, (list, tuple)) or len(raw_box) != 4:
+            continue
+        try:
+            box = tuple(float(value) for value in raw_box)
+        except (TypeError, ValueError):
+            continue
+        x1, y1, x2, y2 = box
+        if (
+            not all(math.isfinite(value) for value in box)
+            or x1 < 0 or y1 < 0 or x2 > width or y2 > height
+            or x2 <= x1 or y2 <= y1
+        ):
+            continue
+        hazard_class = str(row.get("hazard_class") or default_class).strip()
+        annotations.append(
+            GoldenAnnotation(
+                hazard_class=hazard_class,
+                bounding_box=tuple(int(round(value)) for value in box),
+                severity=severity_for_mrv_class(hazard_class),
+            )
+        )
+    return annotations
 
 
 # ---------------------------------------------------------------------------

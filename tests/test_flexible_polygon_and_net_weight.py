@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from PIL import Image, ImageDraw
+import pytest
+from pydantic import ValidationError
 
 from template.miner.geometry import (
     canonical_image_name,
@@ -93,6 +95,26 @@ def test_image_annotation_document_schema():
     assert data["annotations"][0]["polygon"] is not None
 
 
+def test_polygon_cannot_be_displaced_from_its_rewarded_box():
+    """An exact rewarded box cannot carry a fake polygon somewhere else in the image."""
+    with pytest.raises(ValidationError, match="within bounding_box"):
+        PerImageAnnotationItem(
+            hazard_class="tree",
+            bounding_box=[10, 10, 50, 50],
+            polygon=[[100, 100], [140, 100], [140, 140], [100, 140]],
+        )
+
+
+def test_nonfinite_miner_geometry_metadata_is_rejected():
+    for field, value in (("area", float("inf")), ("weight", float("nan")), ("confidence", float("inf"))):
+        with pytest.raises(ValidationError):
+            PerImageAnnotationItem(
+                hazard_class="tree",
+                bounding_box=[10, 10, 50, 50],
+                **{field: value},
+            )
+
+
 def test_fidelity_scorer_with_net_weight():
     scorer = AnnotationFidelityScorer()
     golden = GoldenImage(
@@ -122,3 +144,55 @@ def test_fidelity_scorer_with_net_weight():
     assert res.net_weight_agreement == 1.0
     assert res.gt_net_weight == 0.01
     assert res.miner_net_weight == 0.01
+
+
+def test_fidelity_ignores_miner_reported_weight_and_area():
+    scorer = AnnotationFidelityScorer()
+    golden = GoldenImage(
+        image_id="test_golden_geometry",
+        image_path=Path("/dev/null"),
+        image_url="http://example.com/g.jpg",
+        width=1000,
+        height=1000,
+        annotations=(
+            GoldenAnnotation(
+                hazard_class="individual_tree",
+                bounding_box=(100, 100, 200, 200),
+                severity="medium",
+            ),
+        ),
+    )
+    item = PerImageAnnotationItem(
+        hazard_class="individual_tree",
+        bounding_box=[100, 100, 200, 200],
+        polygon=[[100, 100], [200, 100], [200, 200], [100, 200]],
+        area=1.0,
+        weight=0.5,
+    )
+    result = scorer.score([item], golden)
+    assert result.miner_net_weight == 0.01
+    assert result.net_weight_agreement == 1.0
+
+
+def test_fidelity_does_not_match_microscopic_iou_overlap():
+    scorer = AnnotationFidelityScorer()
+    golden = GoldenImage(
+        image_id="test_golden_small_overlap",
+        image_path=Path("/dev/null"),
+        image_url="http://example.com/g.jpg",
+        width=1000,
+        height=1000,
+        annotations=(
+            GoldenAnnotation(
+                hazard_class="individual_tree",
+                bounding_box=(100, 100, 200, 200),
+                severity="medium",
+            ),
+        ),
+    )
+    tiny = PerImageAnnotationItem(
+        hazard_class="individual_tree", bounding_box=[100, 100, 101, 101]
+    )
+    result = scorer.score([tiny], golden)
+    assert result.matched_count == 0
+    assert result.fidelity == 0.0

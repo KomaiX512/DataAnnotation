@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Sequence, Tuple
 
 from template.protocol import PerImageAnnotationItem
 
@@ -40,9 +41,18 @@ def full_submission_fingerprint(
 
 @dataclass
 class AnnotationDuplicateTracker:
-    """Within-round index: first UID wins for identical annotation structure per image."""
+    """Within-round similarity telemetry; annotation similarity never rejects a miner.
 
-    _image_fingerprint_to_uid: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    Identical outputs can come from the same public model and do not prove
+    copying. This tracker reports exact or near-identical nonempty outputs for
+    audit, but leaves quality and corroboration decisions to independent
+    Golden scoring and the object-vote quorum.
+    """
+
+    similarity_threshold: float = 0.95
+    _image_submissions: Dict[
+        str, List[Tuple[int, Counter]]
+    ] = field(default_factory=dict)
     _full_fp_to_uid: Dict[str, int] = field(default_factory=dict)
 
     def check_and_register(
@@ -50,30 +60,63 @@ class AnnotationDuplicateTracker:
         uid: int,
         records: Mapping[str, Sequence[PerImageAnnotationItem]],
     ) -> Tuple[bool, str]:
-        """Return (ok, reason). ``ok`` is False if this UID duplicates an earlier one."""
+        """Register a response and report similarity without disqualifying it."""
 
-        full_fp = full_submission_fingerprint(records)
-        prior_full = self._full_fp_to_uid.get(full_fp)
+        has_nonempty = any(bool(items) for items in records.values())
+        full_fp = full_submission_fingerprint(records) if has_nonempty else ""
+        prior_full = self._full_fp_to_uid.get(full_fp) if has_nonempty else None
+        reasons: List[str] = []
         if prior_full is not None and prior_full != uid:
-            return False, (
-                f"annotations payload matches uid {prior_full} (full-submission fingerprint)"
+            reasons.append(
+                f"exact full response similarity with uid {prior_full}"
             )
 
         for image_id, items in records.items():
-            fp = fingerprint_annotation_items(items)
-            bucket = self._image_fingerprint_to_uid.get(image_id, {})
-            owner = bucket.get(fp)
-            if owner is not None and owner != uid:
-                return False, (
-                    f"duplicate annotation structure on image_id={image_id} "
-                    f"(first uid={owner})"
-                )
+            # Empty outputs are common correct answers and carry no similarity
+            # evidence. Do not let them suppress a later miner.
+            if not items:
+                continue
+            signature = _coarse_annotation_signature(items)
+            for prior_uid, prior_items in self._image_submissions.get(image_id, []):
+                if prior_uid != uid and _signatures_are_near_identical(
+                    signature, prior_items, self.similarity_threshold
+                ):
+                    reasons.append(
+                        f"near-identical nonempty annotations on image_id={image_id} "
+                        f"with uid {prior_uid}"
+                    )
+                    break
 
-        if prior_full is None:
+        if has_nonempty and prior_full is None:
             self._full_fp_to_uid[full_fp] = uid
         for image_id, items in records.items():
-            fp = fingerprint_annotation_items(items)
-            bucket = self._image_fingerprint_to_uid.setdefault(image_id, {})
-            if fp not in bucket:
-                bucket[fp] = uid
-        return True, ""
+            if items:
+                self._image_submissions.setdefault(image_id, []).append(
+                    (uid, _coarse_annotation_signature(items))
+                )
+        return True, "; ".join(dict.fromkeys(reasons))
+
+
+def _coarse_annotation_signature(items: Sequence[PerImageAnnotationItem]) -> Counter:
+    from template.miner.geometry import canonical_annotation_class
+
+    # Four-pixel bins catch small coordinate nudges with linear work per
+    # annotation. Similarity is telemetry only, so quantization cannot reject.
+    return Counter(
+        (
+            canonical_annotation_class(item.hazard_class),
+            *(int(round(float(coord) / 4.0)) for coord in item.bounding_box),
+        )
+        for item in items
+    )
+
+
+def _signatures_are_near_identical(
+    left: Counter, right: Counter, threshold: float
+) -> bool:
+    left_count = sum(left.values())
+    right_count = sum(right.values())
+    if not left_count or not right_count:
+        return False
+    shared_count = sum((left & right).values())
+    return shared_count / max(left_count, right_count) >= threshold

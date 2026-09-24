@@ -98,6 +98,7 @@ class Validator(BaseValidatorNeuron):
 
     def set_weights(self):
         raw_scores = self.scores.copy()
+        raw_scores[raw_scores < 1e-4] = 0.0
         self.scores = broad_softmax_scores(
             raw_scores,
             temperature=self.config.neuron.incentive_temperature,
@@ -143,6 +144,23 @@ class Validator(BaseValidatorNeuron):
         self.annotation_scores = _resize(self.annotation_scores)
         self.adoption_bonus_scores = _resize(self.adoption_bonus_scores)
 
+    def _on_hotkey_changed(
+        self, uid: int, old_hotkey: str | None, new_hotkey: str | None
+    ) -> None:
+        """Clear validator-owned histories when a UID changes miner identity."""
+        if hasattr(self, "scores") and uid < len(self.scores):
+            self.scores[uid] = 0.0
+        for name in ("annotation_scores", "adoption_bonus_scores"):
+            values = getattr(self, name, None)
+            if values is not None and uid < len(values):
+                values[uid] = 0.0
+        assembler = getattr(self, "dataset_assembler", None)
+        if assembler is not None:
+            assembler.ledger.reset_uid(uid)
+        reliability = getattr(self, "reliability", None)
+        if reliability is not None:
+            reliability.reset_uid(uid)
+
     def save_state(self):
         bt.logging.info("Saving validator state.")
         current_n = int(getattr(self.metagraph, "n", 0))
@@ -184,6 +202,8 @@ class Validator(BaseValidatorNeuron):
         state = np.load(state_path, allow_pickle=False)
         self.step = int(state["step"])
         current_n = int(self.metagraph.n)
+        saved_hotkeys = [str(value) for value in state["hotkeys"]]
+        current_hotkeys = list(self.metagraph.hotkeys)
 
         def _fit(arr: np.ndarray) -> np.ndarray:
             out = np.zeros(current_n, dtype=np.float32)
@@ -191,14 +211,8 @@ class Validator(BaseValidatorNeuron):
             out[:copy_len] = arr[:copy_len]
             return out
 
-        def _fit_hotkeys(arr: np.ndarray) -> np.ndarray:
-            out = np.array(list(self.metagraph.hotkeys))
-            if len(arr) and len(out) == len(arr):
-                return arr
-            return out
-
         self.scores = _fit(state["scores"])
-        self.hotkeys = _fit_hotkeys(state["hotkeys"])
+        self.hotkeys = np.array(current_hotkeys)
         if "annotation_scores" in state:
             self.annotation_scores = _fit(state["annotation_scores"])
         if "adoption_bonus_scores" in state:
@@ -220,6 +234,14 @@ class Validator(BaseValidatorNeuron):
                 self.reliability = _ReliabilityAccumulator()
         else:
             self.reliability = _ReliabilityAccumulator()
+
+        # State files can outlive a hotkey registration. Never attach a former
+        # owner's score, reliability, or adoption credit to the current key.
+        for uid in range(current_n):
+            old_hotkey = saved_hotkeys[uid] if uid < len(saved_hotkeys) else None
+            new_hotkey = current_hotkeys[uid] if uid < len(current_hotkeys) else None
+            if old_hotkey != new_hotkey:
+                self._on_hotkey_changed(uid, old_hotkey, new_hotkey)
 
     def _build_corpus_config(self) -> ImageCorpusConfig:
         golden_ratio = getattr(self.config.neuron, "flywheel_golden_ratio", None)

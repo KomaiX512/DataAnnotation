@@ -24,6 +24,7 @@ import copy
 import hashlib
 import json
 import os
+import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -44,7 +45,7 @@ from template.hazard.annotation_image_serve import (
 )
 from template.hazard.golden_injection import GoldenInjector, InjectionPlan
 from template.hazard.image_corpus import ImageCorpus
-from template.hazard.r2_storage import download_bytes_from_r2, load_r2_credentials_from_env
+from template.hazard.r2_storage import download_bytes_from_r2
 from template.hazard.submission_dedup import AnnotationDuplicateTracker
 from template.protocol import (
     AnnotationTask,
@@ -59,26 +60,48 @@ from template.utils.localnet_axon import (
 )
 from template.utils.uids import get_random_uids
 
+MAX_ANNOTATION_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_RECORDS_PER_ARTIFACT = 8192
+MAX_ANNOTATIONS_PER_ARTIFACT = 100_000
+MAX_POLYGON_VALIDATION_WORK = 2_000_000
+
 
 def _download_miner_artifact_bytes(
     uri: str,
     *,
     miner_r2_credentials: R2AccessCredentials | None = None,
+    allow_file: bool = False,
 ) -> bytes:
-    """Fetch ``annotations.json`` from ``r2://``, ``https://``, or ``file://``."""
+    """Fetch a bounded annotations artifact from an approved storage location."""
     parsed = urlparse(uri)
     if parsed.scheme == "file":
-        return Path(parsed.path).read_bytes()
-    if parsed.scheme in ("http", "https"):
+        if not allow_file:
+            raise ValueError("file:// artifacts are permitted only on local/mock networks.")
+        path = Path(parsed.path)
+        if path.stat().st_size > MAX_ANNOTATION_ARTIFACT_BYTES:
+            raise ValueError("Artifact exceeds the maximum allowed size.")
+        with path.open("rb") as stream:
+            content = stream.read(MAX_ANNOTATION_ARTIFACT_BYTES + 1)
+        if len(content) > MAX_ANNOTATION_ARTIFACT_BYTES:
+            raise ValueError("Artifact exceeds the maximum allowed size.")
+        return content
+    if parsed.scheme == "https":
         from template.utils.http_fetch import fetch_url_bytes
 
-        return fetch_url_bytes(uri, timeout=120.0)
+        return fetch_url_bytes(
+            uri, timeout=120.0, max_bytes=MAX_ANNOTATION_ARTIFACT_BYTES
+        )
     if parsed.scheme == "r2":
-        creds = miner_r2_credentials or load_r2_credentials_from_env()
-        return download_bytes_from_r2(uri, creds=creds)
+        if miner_r2_credentials is None:
+            raise ValueError("Miner R2 credentials are required for r2:// artifacts.")
+        return download_bytes_from_r2(
+            uri,
+            creds=miner_r2_credentials,
+            max_bytes=MAX_ANNOTATION_ARTIFACT_BYTES,
+        )
     raise ValueError(
         f"Unsupported annotations_uri scheme {parsed.scheme!r}; "
-        "expected r2://, file:// (tests), or https://."
+        "expected r2:// or an approved https:// Cloudflare R2 URL."
     )
 
 
@@ -151,8 +174,36 @@ def _request_timeout(self) -> float:
 
 
 def _parse_annotations_payload(raw: bytes) -> AnnotationsFilePayload:
+    if len(raw) > MAX_ANNOTATION_ARTIFACT_BYTES:
+        raise ValueError("Artifact exceeds the maximum allowed size.")
     text = raw.decode("utf-8")
     data = json.loads(text)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        raise ValueError("annotations payload records must be a list")
+    if len(records) > MAX_RECORDS_PER_ARTIFACT:
+        raise ValueError("Artifact contains too many image records.")
+    annotation_count = 0
+    polygon_work = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue  # Pydantic will produce the detailed schema error.
+        annotations = record.get("annotations", [])
+        if not isinstance(annotations, list):
+            continue
+        if len(annotations) > 512:
+            raise ValueError("Image record contains too many annotations.")
+        annotation_count += len(annotations)
+        if annotation_count > MAX_ANNOTATIONS_PER_ARTIFACT:
+            raise ValueError("Artifact contains too many annotations.")
+        for item in annotations:
+            if not isinstance(item, dict):
+                continue
+            polygon = item.get("polygon")
+            if isinstance(polygon, list):
+                polygon_work += len(polygon) * len(polygon)
+                if polygon_work > MAX_POLYGON_VALIDATION_WORK:
+                    raise ValueError("Artifact polygon complexity exceeds the validation limit.")
     return AnnotationsFilePayload.model_validate(data)
 
 
@@ -161,6 +212,9 @@ def _validate_response_shape(
     *,
     expected_task_id: str,
     expected_nonce: str,
+    annotations_payload: Optional[AnnotationsFilePayload] = None,
+    image_dimensions: Optional[Dict[str, Tuple[int, int]]] = None,
+    token_to_real_id: Optional[Dict[str, str]] = None,
 ) -> None:
     if (response.task_id or "") != expected_task_id:
         raise ValueError(
@@ -172,6 +226,35 @@ def _validate_response_shape(
         raise ValueError(f"Miner reported error: {response.error_message}")
     if not response.annotations_uri:
         raise ValueError("Miner response missing annotations_uri.")
+    if annotations_payload is None:
+        return
+    dimensions = image_dimensions or {}
+    id_map = token_to_real_id or {}
+    seen_ids = set()
+    for record in annotations_payload.records:
+        if record.image_id in seen_ids:
+            raise ValueError(f"Duplicate image_id record: {record.image_id}")
+        seen_ids.add(record.image_id)
+        real_id = id_map.get(record.image_id, record.image_id)
+        size = dimensions.get(real_id)
+        if size is None:
+            raise ValueError(f"No validator image dimensions for image_id={record.image_id}")
+        width, height = size
+        for item_index, item in enumerate(record.annotations):
+            x1, y1, x2, y2 = item.bounding_box
+            if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+                raise ValueError(
+                    f"Out-of-bounds bounding_box for image_id={record.image_id} "
+                    f"annotation={item_index} image_size={width}x{height}"
+                )
+            if item.polygon and any(
+                x < 0 or y < 0 or x > width or y > height
+                for x, y in item.polygon
+            ):
+                raise ValueError(
+                    f"Out-of-bounds polygon for image_id={record.image_id} "
+                    f"annotation={item_index} image_size={width}x{height}"
+                )
 
 
 async def dual_flywheel_forward(self) -> None:
@@ -200,6 +283,7 @@ async def _dual_flywheel_forward_impl(
     uids = get_random_uids(self, k=self.config.neuron.sample_size, exclude=exclude).tolist()
     if not uids:
         bt.logging.warning("event=annotation_flywheel_no_uids")
+        _decay_empty_validator_round(self)
         return
 
     bt.logging.info(
@@ -224,6 +308,13 @@ async def _dual_flywheel_forward_impl(
         f"event=training_pool_built count={len(training_pool_items)} "
         f"hash={training_pool_hash[:16]}…"
     )
+
+    # Dimensions are kept validator-side and keyed by the canonical image ID;
+    # miner-facing IDs are opaque per-request tokens.
+    image_dimensions = {
+        image.image_id: (int(image.width), int(image.height))
+        for image in (*corpus.golden_images(), *corpus.annotation_images())
+    }
 
     synapses_by_uid: Dict[int, AnnotationTask] = {}
     nonces_by_uid: Dict[int, str] = {}
@@ -275,6 +366,15 @@ async def _dual_flywheel_forward_impl(
 
     raw_results = await asyncio.gather(*[_dispatch(uid) for uid in uids])
 
+    subtensor_cfg = getattr(self.config, "subtensor", None)
+    endpoint = str(getattr(subtensor_cfg, "chain_endpoint", ""))
+    network = str(getattr(subtensor_cfg, "network", "")).lower()
+    allow_file_artifacts = (
+        endpoint.startswith("ws://127.0.0.1")
+        or endpoint.startswith("ws://localhost")
+        or network in ("local", "mock")
+    )
+
     annotations_by_uid: Dict[int, Dict[str, List[PerImageAnnotationItem]]] = {}
     miner_hotkeys: Dict[int, str] = {}
     model_versions: Dict[int, str] = {}
@@ -300,8 +400,17 @@ async def _dual_flywheel_forward_impl(
             raw = _download_miner_artifact_bytes(
                 response.annotations_uri,
                 miner_r2_credentials=response.miner_r2_credentials,
+                allow_file=allow_file_artifacts,
             )
             payload = _parse_annotations_payload(raw)
+            _validate_response_shape(
+                response,
+                expected_task_id=synapse.task_id,
+                expected_nonce=nonces_by_uid[uid],
+                annotations_payload=payload,
+                image_dimensions=image_dimensions,
+                token_to_real_id=token_maps_by_uid.get(uid, {}),
+            )
         except Exception as exc:
             bt.logging.error(
                 f"event=annotation_flywheel_annotations_download_failure uid={uid} error={exc}"
@@ -312,6 +421,8 @@ async def _dual_flywheel_forward_impl(
         expected_ids = {image.image_id for image in synapse.annotation_images}
         version_samples: list[str] = []
         uid_id_map = token_maps_by_uid.get(uid, {})
+        from template.miner.geometry import canonical_annotation_class
+
         for record in payload.records:
             if record.image_id not in expected_ids:
                 bt.logging.warning(
@@ -319,27 +430,32 @@ async def _dual_flywheel_forward_impl(
                 )
                 continue
             canonical_image_id = uid_id_map.get(record.image_id, record.image_id)
-            valid_records[canonical_image_id] = list(record.annotations)
+            valid_records[canonical_image_id] = [
+                item.model_copy(
+                    update={
+                        "hazard_class": canonical_annotation_class(item.hazard_class)
+                    }
+                )
+                for item in record.annotations
+            ]
             version_samples.append(record.model_version)
+
+        # Missing rows are explicit abstentions, not a way to disappear from
+        # the per-image quorum. This applies to both Golden scoring and pool
+        # consensus after the task's opaque IDs are resolved.
+        for task_image in synapse.annotation_images:
+            canonical_id = uid_id_map.get(task_image.image_id, task_image.image_id)
+            valid_records.setdefault(canonical_id, [])
         if not valid_records:
             bt.logging.warning(f"event=annotation_flywheel_no_valid_records uid={uid}")
             continue
 
-        ok_dedup, dedup_reason = duplicate_tracker.check_and_register(uid, valid_records)
-        if not ok_dedup:
-            allow_dups = bool(
-                getattr(getattr(self, "config", None), "neuron", None)
-                and getattr(self.config.neuron, "allow_duplicate_submissions", False)
-            ) or (os.getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
-            if allow_dups:
-                bt.logging.warning(
-                    f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (BYPASSED by configuration)"
-                )
-            else:
-                bt.logging.warning(
-                    f"event=annotation_flywheel_duplicate_annotation_rejected uid={uid} detail={dedup_reason} (REJECTED)"
-                )
-                continue
+        _, dedup_reason = duplicate_tracker.check_and_register(uid, valid_records)
+        if dedup_reason:
+            bt.logging.warning(
+                f"event=annotation_flywheel_similarity_observed uid={uid} "
+                f"detail={dedup_reason} action=retain"
+            )
 
         annotations_by_uid[uid] = valid_records
         miner_hotkeys[uid] = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else ""
@@ -349,7 +465,27 @@ async def _dual_flywheel_forward_impl(
 
     if not valid_uids:
         bt.logging.warning("event=annotation_flywheel_no_valid_uids step=%d" % self.step)
+        _decay_empty_validator_round(self)
         return
+
+    # Consensus quorum denominator is the set of UIDs sampled for this task,
+    # not just responders that passed validation. Failed or timed-out sampled
+    # miners abstain on every task image; a coalition cannot shrink quorum by
+    # causing honest responses to fail.
+    consensus_annotations_by_uid = dict(annotations_by_uid)
+    consensus_hotkeys = dict(miner_hotkeys)
+    for uid in uids:
+        if uid in consensus_annotations_by_uid:
+            continue
+        uid_id_map = token_maps_by_uid.get(uid, {})
+        consensus_annotations_by_uid[uid] = {
+            uid_id_map.get(image.image_id, image.image_id): []
+            for image in synapses_by_uid[uid].annotation_images
+        }
+        consensus_hotkeys[uid] = (
+            self.metagraph.hotkeys[uid]
+            if uid < len(self.metagraph.hotkeys) else ""
+        )
 
     expected_golden_ids_by_uid = {
         uid: tuple(
@@ -405,10 +541,29 @@ async def _dual_flywheel_forward_impl(
             )
         )
 
+    coldkeys = getattr(self.metagraph, "coldkeys", None)
+    if coldkeys is None or len(coldkeys) <= max(uids, default=-1):
+        # Without ownership keys the validator cannot distinguish two hotkeys
+        # controlled by one owner. Treat every response as the same identity,
+        # forcing consensus-backed commercial acceptance to fail closed.
+        miner_identity_keys = {
+            uid: "missing-coldkey-metadata" for uid in uids
+        }
+        bt.logging.error(
+            "event=annotation_flywheel_identity_metadata_missing "
+            "action=fail_closed_consensus"
+        )
+    else:
+        miner_identity_keys = {
+            uid: str(coldkeys[uid] or "missing-coldkey-metadata")
+            for uid in uids
+        }
+
     winners = assembler.assemble(
         per_miner_scores=per_miner_scores,
-        annotations_by_uid=annotations_by_uid,
-        miner_hotkeys=miner_hotkeys,
+        annotations_by_uid=consensus_annotations_by_uid,
+        miner_hotkeys=consensus_hotkeys,
+        miner_identity_keys=miner_identity_keys,
         model_versions=model_versions,
         timestamps=timestamps,
     )
@@ -440,6 +595,35 @@ async def _dual_flywheel_forward_impl(
         "event=annotation_flywheel_round_done step=%d uids=%d winners=%d rewards=%s"
         % (self.step, len(valid_uids), len(winners), rewards.tolist())
     )
+
+
+def _decay_empty_validator_round(self) -> None:
+    """Treat a round with no valid responses as zero reward for every UID."""
+    scores = getattr(self, "scores", None)
+    if scores is not None and len(scores):
+        all_uids = list(range(len(scores)))
+        self.update_scores(
+            np.zeros(len(all_uids), dtype=np.float32),
+            all_uids,
+        )
+
+    alpha = float(self.config.neuron.moving_average_alpha)
+    decay = max(0.0, min(1.0, 1.0 - alpha))
+    for field_name in ("annotation_scores", "adoption_bonus_scores"):
+        values = getattr(self, field_name, None)
+        if values is not None:
+            values *= decay
+            values[values < 1e-4] = 0.0
+
+    reliability = getattr(self, "reliability", None)
+    if reliability is not None:
+        reliability.decay_all()
+
+    assembler = getattr(self, "dataset_assembler", None)
+    ledger = getattr(assembler, "ledger", None)
+    if ledger is not None:
+        ledger.last_round_counts = {}
+        ledger.last_round_contributions = {}
 
 
 def _build_full_dataset_plan(corpus: ImageCorpus) -> InjectionPlan:

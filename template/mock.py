@@ -109,6 +109,7 @@ class MockMetagraph:
         self.validator_permit = np.array([False] * len(hotkeys))
         self.last_update = np.array([0] * len(hotkeys))
         self.axons = [MockAxonInfo(uid=i, hotkey=hk) for i, hk in enumerate(hotkeys)]
+        self.coldkeys = [f"mock-coldkey-{i}" for i in range(len(hotkeys))]
 
 
 class MockAxon:

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
+
+MIN_INCENTIVE_SCORE = 0.05
+MAX_CUMULATIVE_FLOOR = 0.20
 
 
 def broad_softmax_scores(
@@ -18,13 +23,15 @@ def broad_softmax_scores(
     paid without flattening competition at the top.
     """
 
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
-    if floor < 0:
-        raise ValueError("floor must be non-negative")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("temperature must be finite and positive")
+    if not math.isfinite(floor) or floor < 0:
+        raise ValueError("floor must be finite and non-negative")
+    if not math.isfinite(min_score):
+        raise ValueError("min_score must be finite")
 
     raw = np.asarray(scores, dtype=np.float64)
-    cutoff = min_score if min_score > 0.0 else 0.0
+    cutoff = max(float(min_score), MIN_INCENTIVE_SCORE)
     eligible = np.isfinite(raw) & (raw >= cutoff) & (raw > 0.0)
     shaped = np.zeros_like(raw, dtype=np.float64)
     if not eligible.any():
@@ -38,8 +45,8 @@ def broad_softmax_scores(
     # Dynamically scale floor to prevent negative multipliers when many miners are eligible
     n_eligible = len(exp_scores)
     effective_floor = floor
-    if floor * n_eligible > 0.9:
-        effective_floor = 0.9 / n_eligible
+    if floor * n_eligible > MAX_CUMULATIVE_FLOOR:
+        effective_floor = MAX_CUMULATIVE_FLOOR / n_eligible
 
     shaped_values = effective_floor + (1.0 - effective_floor * n_eligible) * exp_scores
     shaped_values = np.clip(shaped_values, 0.0, None)
@@ -48,4 +55,3 @@ def broad_softmax_scores(
     if total > 0:
         shaped = shaped / total
     return shaped.astype(np.float32)
-

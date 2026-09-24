@@ -220,4 +220,8 @@ logs/
 # Scratch / Training data
 train/
 artifacts/
+scratch/
+bench/
+paper.txt
+
 

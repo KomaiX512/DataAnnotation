@@ -21,6 +21,8 @@ import pytest
 from template.hazard.annotation_eval import (
     AnnotationFidelityScorer,
     ConsensusScorer,
+    FidelityComponents,
+    PerMinerAnnotationScore,
     evaluate_round_annotations,
     iou_xyxy,
     _ReliabilityAccumulator,
@@ -353,6 +355,165 @@ def test_evaluate_round_annotations_only_penalizes_missing_injected_golden(tmp_p
     assert g2.image_id not in scores[2].fidelity_scores_by_image_id
 
 
+def test_missing_golden_rows_are_zero_once_not_exponentially_penalized():
+    score = PerMinerAnnotationScore(uid=1)
+    score.fidelity_scores_by_image_id = {
+        **{"hit": 1.0},
+        **{f"missing-{index}": 0.0 for index in range(5)},
+    }
+    score.golden_missing_count = 5
+    assert score.average_score(golden_missing_penalty=0.5) == pytest.approx(1 / 6)
+
+
+def test_round_reward_does_not_apply_a_second_hallucination_multiplier():
+    score = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"gold": 0.4},
+        total_hallucinations=5,
+        total_ground_truth=5,
+    )
+    rewards, breakdowns = DualFlywheelRewardComposer(
+        alpha=1.0, hallucination_penalty_per_event=0.5
+    ).compose(
+        uids=[1],
+        annotation_scores={1: score},
+        ledger=AdoptionLedger(),
+        round_winners=[],
+    )
+    assert rewards[0] == pytest.approx(0.4)
+    assert breakdowns[0].hallucination_multiplier == 1.0
+
+
+def test_unlabeled_consensus_adoption_requires_rewardable_golden_evidence():
+    ledger = AdoptionLedger(last_round_contributions={1: 0.5, 2: 0.5})
+    unverified = {
+        uid: PerMinerAnnotationScore(uid=uid)
+        for uid in (1, 2)
+    }
+    rewards, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[1, 2],
+        annotation_scores=unverified,
+        ledger=ledger,
+        round_winners=[],
+    )
+    assert rewards.tolist() == pytest.approx([0.0, 0.0])
+    assert [item.adoption_bonus for item in breakdowns] == pytest.approx([0.0, 0.0])
+
+    verified = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"g1": 0.9, "g2": 0.9, "g3": 0.9},
+        localization_iou_mean=0.9,
+    )
+    audited_winner = WinningAnnotation(
+        image_id="independently-audited",
+        score=1.0,
+        chosen_uid=1,
+        is_golden=False,
+        ground_truth_verified=True,
+        aggregation_method="golden_audit_v1",
+        image_url="https://example.test/image.jpg",
+        width=100,
+        height=100,
+        escalation_required=False,
+        escalation_reason=None,
+        accepted_objects=[],
+        miner_contribution_scores={1: 1.0},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+    )
+    rewards, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[1],
+        annotation_scores={1: verified},
+        ledger=ledger,
+        round_winners=[audited_winner],
+    )
+    assert breakdowns[0].adoption_bonus == pytest.approx(0.5)
+    assert rewards[0] == pytest.approx(0.78)
+
+
+def test_clean_or_single_positive_goldens_cannot_qualify_direct_or_adoption_rewards():
+    clean = FidelityComponents(
+        iou=1.0,
+        class_severity=1.0,
+        fidelity=1.0,
+        hallucination_penalty=1.0,
+        matched_count=0,
+        hallucinated_count=0,
+        ground_truth_count=0,
+    )
+    positive = FidelityComponents(
+        iou=1.0,
+        class_severity=1.0,
+        fidelity=1.0,
+        hallucination_penalty=1.0,
+        matched_count=1,
+        hallucinated_count=0,
+        ground_truth_count=1,
+    )
+    ledger = AdoptionLedger(last_round_contributions={1: 1.0})
+
+    clean_only = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"c1": 1.0, "c2": 1.0, "c3": 1.0},
+        fidelity_components_by_image_id={"c1": clean, "c2": clean, "c3": clean},
+        localization_iou_mean=1.0,
+    )
+    one_positive = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"p1": 1.0, "c1": 1.0, "c2": 1.0},
+        fidelity_components_by_image_id={
+            "p1": positive,
+            "c1": clean,
+            "c2": clean,
+        },
+        localization_iou_mean=1.0,
+    )
+
+    for score in (clean_only, one_positive):
+        rewards, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+            uids=[1],
+            annotation_scores={1: score},
+            ledger=ledger,
+            round_winners=[],
+        )
+        assert rewards[0] == 0.0
+        assert breakdowns[0].annotation_score == 0.0
+        assert breakdowns[0].adoption_bonus == 0.0
+
+
+def test_three_positive_goldens_need_three_localized_exact_matches_for_reward():
+    def component(iou: float, class_score: float) -> FidelityComponents:
+        return FidelityComponents(
+            iou=iou,
+            class_severity=class_score,
+            fidelity=iou * class_score,
+            hallucination_penalty=1.0,
+            matched_count=1,
+            hallucinated_count=0,
+            ground_truth_count=1,
+        )
+
+    weak = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"g1": 0.7, "g2": 0.7, "g3": 0.7},
+        fidelity_components_by_image_id={
+            "g1": component(0.5, 1.0),
+            "g2": component(0.5, 1.0),
+            "g3": component(0.5, 1.0),
+        },
+        localization_iou_mean=0.5,
+    )
+    rewards, _ = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[1],
+        annotation_scores={1: weak},
+        ledger=AdoptionLedger(),
+        round_winners=[],
+    )
+    assert rewards[0] == 0.0
+
+
 def test_evaluate_round_annotations_aggregates_correctly(tmp_path):
     corpus = _build_synthetic_corpus(tmp_path)
     g1 = corpus.golden_images()[0]
@@ -413,7 +574,11 @@ def test_dataset_assembler_picks_best_per_image_id(tmp_path):
         timestamps={1: "ts1", 2: "ts2"},
     )
     assert any(w.image_id == g1.image_id and w.chosen_uid == 1 for w in winners)
-    assert assembler.ledger.adoption_counts.get(1, 0) >= 1
+    expected_adoptions = sum(
+        not winner.is_golden and not winner.escalation_required
+        for winner in winners
+    )
+    assert sum(assembler.ledger.last_round_counts.values()) == expected_adoptions
 
 
 def test_dataset_assembler_export_local_jsonl(tmp_path):
@@ -558,7 +723,7 @@ def test_dataset_assembler_export_skips_when_only_golden_winners(tmp_path):
 # Reward composer
 # ---------------------------------------------------------------------------
 
-def test_dual_reward_composer_combines_three_signals(tmp_path):
+def test_single_positive_golden_sample_cannot_qualify_direct_reward(tmp_path):
     corpus = _build_synthetic_corpus(tmp_path)
     g1 = corpus.golden_images()[0]
     pool = corpus.annotation_images()[0]
@@ -591,8 +756,8 @@ def test_dual_reward_composer_combines_three_signals(tmp_path):
         ledger=assembler.ledger,
         round_winners=winners,
     )
-    assert rewards[0] > rewards[1]  # uid 1 should clearly win
-    assert breakdowns[0].annotation_score > 0.0
+    assert rewards.tolist() == pytest.approx([0.0, 0.0])
+    assert breakdowns[0].annotation_score == 0.0
     assert breakdowns[0].adoption_bonus >= 0.0
     assert breakdowns[0].final_score == pytest.approx(rewards[0], abs=1e-6)
 

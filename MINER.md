@@ -633,3 +633,25 @@ Miners submit annotations adhering to the subnet's v1 schema supporting flexible
 }
 ```
 
+---
+
+## Subnet v1.2.0 Validation Requirements
+
+As of version 1.2.0, the validator enforces strict schema integrity and realistic evaluation bounds:
+
+1. **Bounding Box Validity**:
+   - `bounding_box` must be four finite floats `[x1, y1, x2, y2]`.
+   - Positive width and height are strictly required: $x_2 > x_1$ and $y_2 > y_1$. Any `NaN`, `Inf`, inverted, or zero-area coordinates are rejected.
+2. **Polygon Coordinates**:
+   - If `polygon` is included, all vertices must lie strictly within the corresponding `bounding_box`.
+   - Polygons must enclose positive area and be non-self-intersecting.
+3. **Minimum IoU Threshold**:
+   - Detections are matched to ground-truth targets using an **IoU threshold of $\ge 0.50$**. Sub-0.50 candidate boxes are treated as misses.
+4. **Taxonomy & Canonical Classes**:
+   - Use standard Climate MRV classes: `individual_tree`, `group_of_trees`, `dense_tree`, `intact_forest`, `degraded_forest`, `mangrove`, `plantation`, etc.
+   - Arbitrary or unrelated labels (e.g. `water`, `urban`) are no longer aliased to trees and receive zero matching credit against tree targets.
+5. **Artifact Limits**:
+   - Max 512 annotations per image document and max 8,192 records per artifact payload.
+   - Maximum artifact size is 16 MiB.
+
+

@@ -27,23 +27,68 @@ CARBON_WEIGHT_MULTIPLIERS: Dict[str, float] = {
 
 
 def canonical_carbon_class(raw_class: str) -> str:
-    """Normalize raw class / hazard label / tree species into canonical Carbon MRV taxonomy."""
-    c = (raw_class or "").lower().strip()
-    if any(k in c for k in ("mangrove", "wetland")):
+    """Map known annotation labels to a carbon weight class without substring guesses."""
+    c = canonical_annotation_class(raw_class)
+    if c in {"mangrove", "wetland"}:
         return "mangrove"
-    if any(k in c for k in ("plantation", "eucalyptus", "oil palm", "rubber", "orchard")):
+    if c in {"plantation", "eucalyptus", "oil_palm", "rubber", "orchard"}:
         return "plantation"
-    if any(k in c for k in ("field", "farm", "agri", "crop", "cropland", "parcel")):
+    if c in {"field", "farm", "agriculture", "crop", "cropland", "parcel"}:
         return "field"
-    if any(k in c for k in ("conifer", "pine", "spruce", "taiga", "boreal", "fir", "larch")):
+    if c in {"conifer", "pine", "spruce", "taiga", "boreal", "fir", "larch"}:
         return "dense_tree"
-    if any(k in c for k in ("broadleaf", "tropical", "rainforest", "rain forest", "emergent", "hardwood", "dense", "group", "intact_forest", "forest", "dense_tree")):
+    if c in {
+        "broadleaf", "tropical", "rainforest", "emergent", "hardwood",
+        "dense_tree", "group_of_trees", "intact_forest", "degraded_forest",
+    }:
         return "dense_tree"
-    if any(k in c for k in ("plant", "shrub", "regrowth", "understory", "brush")):
+    if c in {"plant", "shrub", "regrowth", "understory", "brush"}:
         return "plant"
-    if any(k in c for k in ("individual", "ordinary", "tree", "crown", "deciduous")):
+    if c in {"individual_tree", "ordinary_tree", "tree", "crown", "deciduous"}:
         return "ordinary_tree"
+    # Unknown labels get only the neutral carbon multiplier. Class scoring uses
+    # canonical_annotation_class and therefore never aliases unknowns to trees.
     return "ordinary_tree"
+
+
+_CLASS_ALIASES = {
+    "background": "_background",
+    # Carbon MRV/tree aliases.
+    "tree": "ordinary_tree",
+    "individual tree": "ordinary_tree",
+    "single tree": "ordinary_tree",
+    "ordinary tree": "ordinary_tree",
+    "group of trees": "group_of_trees",
+    "tree group": "group_of_trees",
+    "dense tree": "dense_tree",
+    "mangrove tree": "mangrove",
+    "forest": "intact_forest",
+    "intact forest": "intact_forest",
+    "degraded forest": "degraded_forest",
+    "fire scar": "fire_scar",
+    "bare land": "bare_land",
+    "crop land": "cropland",
+    "oil palm": "oil_palm",
+    # Explicit safety-label aliases used by the legacy safety corpus.
+    "hard hat": "hardhat",
+    "helmet": "hardhat",
+    "no hardhat": "missing_hardhat",
+    "missing hard hat": "missing_hardhat",
+    "no helmet": "missing_hardhat",
+    "missing helmet": "missing_hardhat",
+    "fall protection": "fall_protection",
+    "trip hazard": "trip_hazard",
+}
+
+
+def canonical_annotation_class(raw_class: str) -> str:
+    """Normalize known aliases and preserve unknown labels as distinct classes."""
+    text = " ".join(
+        (raw_class or "").strip().lower().replace("_", " ").replace("-", " ").split()
+    )
+    if not text:
+        return "_background"
+    return _CLASS_ALIASES.get(text, text.replace(" ", "_"))
 
 
 def extract_canopy_geometry(
@@ -105,13 +150,23 @@ def extract_canopy_geometry(
         except Exception:
             pass
 
+    bx1, by1, bx2, by2 = round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)
+    default_box_poly = [
+        [bx1, by1],
+        [bx2, by1],
+        [bx2, by2],
+        [bx1, by2],
+    ]
     # 3. Fallback: 4-point polygon matching bounding box
     if poly is None:
+        poly = default_box_poly
+    else:
         poly = [
-            [round(x1, 2), round(y1, 2)],
-            [round(x2, 2), round(y1, 2)],
-            [round(x2, 2), round(y2, 2)],
-            [round(x1, 2), round(y2, 2)],
+            [
+                max(bx1, min(bx2, round(float(p[0]), 2))),
+                max(by1, min(by2, round(float(p[1]), 2))),
+            ]
+            for p in poly
         ]
     if poly_area is None or poly_area <= 0:
         poly_area = float(max(0.0, (x2 - x1) * (y2 - y1)))
@@ -123,14 +178,24 @@ def extract_canopy_geometry(
     obj_weight = round(item_ratio * carbon_mult, 6)
     final_class = canon_cls if canonicalize else hazard_class
 
-    return PerImageAnnotationItem(
-        hazard_class=final_class,
-        bounding_box=[round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
-        polygon=poly,
-        area=round(poly_area, 2),
-        weight=obj_weight,
-        confidence=round(confidence, 4),
-    )
+    try:
+        return PerImageAnnotationItem(
+            hazard_class=final_class,
+            bounding_box=[bx1, by1, bx2, by2],
+            polygon=poly,
+            area=round(poly_area, 2),
+            weight=obj_weight,
+            confidence=round(confidence, 4),
+        )
+    except Exception:
+        return PerImageAnnotationItem(
+            hazard_class=final_class,
+            bounding_box=[bx1, by1, bx2, by2],
+            polygon=default_box_poly,
+            area=round(poly_area, 2),
+            weight=obj_weight,
+            confidence=round(confidence, 4),
+        )
 
 
 def compute_image_net_metrics(

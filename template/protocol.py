@@ -3,9 +3,37 @@ from __future__ import annotations
 from typing import List, Literal, Optional
 
 import bittensor as bt
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 SeverityTier = Literal["none", "low", "medium", "high", "critical"]
+
+
+def _orientation(a: List[float], b: List[float], c: List[float]) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _on_segment(a: List[float], b: List[float], p: List[float]) -> bool:
+    return (
+        min(a[0], b[0]) <= p[0] <= max(a[0], b[0])
+        and min(a[1], b[1]) <= p[1] <= max(a[1], b[1])
+    )
+
+
+def _segments_intersect(
+    a: List[float], b: List[float], c: List[float], d: List[float]
+) -> bool:
+    o1, o2 = _orientation(a, b, c), _orientation(a, b, d)
+    o3, o4 = _orientation(c, d, a), _orientation(c, d, b)
+    if ((o1 > 0 > o2) or (o2 > 0 > o1)) and ((o3 > 0 > o4) or (o4 > 0 > o3)):
+        return True
+    return (
+        (o1 == 0 and _on_segment(a, b, c))
+        or (o2 == 0 and _on_segment(a, b, d))
+        or (o3 == 0 and _on_segment(c, d, a))
+        or (o4 == 0 and _on_segment(c, d, b))
+    )
 
 
 class UnlabeledAnnotationImage(BaseModel):
@@ -16,10 +44,82 @@ class UnlabeledAnnotationImage(BaseModel):
 class PerImageAnnotationItem(BaseModel):
     hazard_class: str = Field(..., min_length=1)
     bounding_box: List[float] = Field(..., min_length=4, max_length=4)
-    polygon: Optional[List[List[float]]] = Field(None, description="Optional polygon contour coordinates [[x,y],...]")
+    polygon: Optional[List[List[float]]] = Field(
+        None,
+        max_length=256,
+        description="Optional polygon contour coordinates [[x,y],...]",
+    )
     area: Optional[float] = Field(None, description="Annotated object area in pixels")
     weight: Optional[float] = Field(None, description="Ratio of object area to total image area")
     confidence: Optional[float] = Field(None, description="Detection confidence score in [0, 1]")
+
+    @field_validator("bounding_box")
+    @classmethod
+    def validate_bounding_box(cls, value: List[float]) -> List[float]:
+        if len(value) != 4 or not all(math.isfinite(v) for v in value):
+            raise ValueError("bounding_box must contain four finite coordinates")
+        x1, y1, x2, y2 = value
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("bounding_box must have positive width and height")
+        return value
+
+    @field_validator("area", "weight", "confidence")
+    @classmethod
+    def validate_finite_metadata(cls, value: Optional[float], info) -> Optional[float]:
+        if value is None:
+            return value
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{info.field_name} must be finite and non-negative")
+        if info.field_name == "confidence" and value > 1.0:
+            raise ValueError("confidence must be in [0, 1]")
+        return value
+
+    @field_validator("polygon")
+    @classmethod
+    def validate_polygon(
+        cls, value: Optional[List[List[float]]]
+    ) -> Optional[List[List[float]]]:
+        if value is None:
+            return value
+        if len(value) < 3 or any(
+            len(point) != 2 or not all(math.isfinite(coord) for coord in point)
+            for point in value
+        ):
+            raise ValueError("polygon must contain at least three finite [x, y] points")
+        return value
+
+    @model_validator(mode="after")
+    def validate_polygon_within_box(self) -> "PerImageAnnotationItem":
+        if self.polygon is None:
+            return self
+        x1, y1, x2, y2 = self.bounding_box
+        if any(
+            x < x1 or y < y1 or x > x2 or y > y2
+            for x, y in self.polygon
+        ):
+            raise ValueError("polygon vertices must lie within bounding_box")
+        twice_area = abs(
+            sum(
+                self.polygon[index][0]
+                * self.polygon[(index + 1) % len(self.polygon)][1]
+                - self.polygon[(index + 1) % len(self.polygon)][0]
+                * self.polygon[index][1]
+                for index in range(len(self.polygon))
+            )
+        )
+        if not math.isfinite(twice_area) or twice_area <= 0.0:
+            raise ValueError("polygon must enclose positive finite area")
+        count = len(self.polygon)
+        for i in range(count):
+            a, b = self.polygon[i], self.polygon[(i + 1) % count]
+            for j in range(i + 1, count):
+                # Adjacent edges share a vertex by definition and are valid.
+                if j == i or j == (i + 1) % count or i == (j + 1) % count:
+                    continue
+                c, d = self.polygon[j], self.polygon[(j + 1) % count]
+                if _segments_intersect(a, b, c, d):
+                    raise ValueError("polygon must be a simple non-self-intersecting contour")
+        return self
 
 
 class LabeledTrainingImage(BaseModel):
@@ -39,7 +139,7 @@ class ImageAnnotationDocument(BaseModel):
     image_url: str = Field(..., min_length=1)
     miner_uid: str
     timestamp: str
-    annotations: List[PerImageAnnotationItem]
+    annotations: List[PerImageAnnotationItem] = Field(..., max_length=512)
     model_version: str = Field(..., min_length=8)
     image_name: Optional[str] = Field(None, description="Canonical image filename (e.g. climate_raw_042.jpg)")
     net_weight: Optional[float] = Field(None, description="Net tree coverage ratio in [0, 1]")
@@ -51,7 +151,7 @@ class ImageAnnotationDocument(BaseModel):
 class AnnotationsFilePayload(BaseModel):
     schema_version: str = Field("annotations.v1", min_length=1)
     task_id: str = Field("", min_length=0)
-    records: List[ImageAnnotationDocument]
+    records: List[ImageAnnotationDocument] = Field(..., max_length=8192)
 
 
 class R2AccessCredentials(BaseModel):

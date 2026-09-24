@@ -23,11 +23,13 @@ def test_fingerprint_stable_under_box_order():
     assert fingerprint_annotation_items(a) == fingerprint_annotation_items(b)
 
 
-def test_annotation_duplicate_tracker_rejects_second_uid_same_image():
+def test_identical_nonempty_output_is_observed_but_not_rejected():
     tr = AnnotationDuplicateTracker()
     one = {"img1": [_item()]}
     assert tr.check_and_register(1, one)[0] is True
-    assert tr.check_and_register(2, one)[0] is False
+    accepted, reason = tr.check_and_register(2, one)
+    assert accepted is True
+    assert "similarity" in reason
 
 
 def test_annotation_duplicate_tracker_allows_same_uid_distinct_payloads():
@@ -42,25 +44,26 @@ def test_full_submission_duplicate():
     fp = full_submission_fingerprint(payload)
     assert fp == full_submission_fingerprint(payload)
     assert tr.check_and_register(3, payload)[0] is True
-    assert tr.check_and_register(4, payload)[0] is False
+    accepted, reason = tr.check_and_register(4, payload)
+    assert accepted is True
+    assert "similarity" in reason
 
 
-def test_validator_duplicate_rejection_policy(monkeypatch):
-    """Verify that by default duplicates are rejected, but bypassable with flag."""
+def test_empty_annotations_are_not_duplicate_evidence():
     tr = AnnotationDuplicateTracker()
-    payload = {"img1": [_item()]}
-    ok1, _ = tr.check_and_register(1, payload)
-    assert ok1 is True
+    assert tr.check_and_register(1, {"img1": []}) == (True, "")
+    assert tr.check_and_register(2, {"img1": []}) == (True, "")
 
-    ok2, reason = tr.check_and_register(2, payload)
-    assert ok2 is False
 
-    # Default policy: reject duplicate
-    monkeypatch.delenv("ALLOW_DUPLICATE_SUBMISSIONS", raising=False)
-    allow = bool(__import__("os").getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
-    assert allow is False
-
-    # Explicit override: allow duplicate
-    monkeypatch.setenv("ALLOW_DUPLICATE_SUBMISSIONS", "1")
-    allow_override = bool(__import__("os").getenv("ALLOW_DUPLICATE_SUBMISSIONS", "").strip().lower() in ("1", "true", "yes"))
-    assert allow_override is True
+def test_small_coordinate_jitter_is_flagged_without_penalty():
+    tr = AnnotationDuplicateTracker()
+    assert tr.check_and_register(
+        1,
+        {"img1": [_item(bounding_box=[100, 100, 300, 300])]},
+    )[0]
+    accepted, reason = tr.check_and_register(
+        2,
+        {"img1": [_item(bounding_box=[101, 101, 301, 301])]},
+    )
+    assert accepted is True
+    assert "near-identical" in reason

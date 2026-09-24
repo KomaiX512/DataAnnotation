@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import logging
+import math
 
 from template.hazard.image_corpus import GoldenAnnotation, GoldenImage, ImageCorpus
 
@@ -22,8 +23,13 @@ from template.protocol import PerImageAnnotationItem
 def iou_xyxy(box_a: Sequence[float], box_b: Sequence[float]) -> float:
     if len(box_a) != 4 or len(box_b) != 4:
         return 0.0
-    ax1, ay1, ax2, ay2 = (float(v) for v in box_a)
-    bx1, by1, bx2, by2 = (float(v) for v in box_b)
+    try:
+        ax1, ay1, ax2, ay2 = (float(v) for v in box_a)
+        bx1, by1, bx2, by2 = (float(v) for v in box_b)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not all(math.isfinite(v) for v in (ax1, ay1, ax2, ay2, bx1, by1, bx2, by2)):
+        return 0.0
     if ax2 <= ax1 or ay2 <= ay1 or bx2 <= bx1 or by2 <= by1:
         return 0.0
     inter_x1 = max(ax1, bx1)
@@ -55,6 +61,7 @@ class FidelityComponents:
     net_weight_agreement: float = 1.0
     gt_net_weight: float = 0.0
     miner_net_weight: float = 0.0
+    rewardable: bool = True
 
 
 @dataclass
@@ -70,6 +77,14 @@ class AnnotationFidelityScorer:
     iou_weight: float = 0.60
     class_weight: float = 0.40
     hallucination_penalty: float = 0.5
+    minimum_match_iou: float = 0.50
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.minimum_match_iou)
+            or not 0.0 <= self.minimum_match_iou <= 1.0
+        ):
+            raise ValueError("minimum_match_iou must be finite and in [0, 1]")
 
     def score(
         self,
@@ -85,19 +100,24 @@ class AnnotationFidelityScorer:
 
         miner_net_weight = 0.0
         for item in miner_items:
-            if item.weight is not None and item.weight >= 0:
-                miner_net_weight += float(item.weight)
-            else:
-                area = float(item.area) if item.area is not None and item.area > 0 else (
-                    max(0.0, float(item.bounding_box[2] - item.bounding_box[0])) *
-                    max(0.0, float(item.bounding_box[3] - item.bounding_box[1])) if item.bounding_box and len(item.bounding_box) == 4 else 0.0
-                )
-                c_cls = canonical_carbon_class(item.hazard_class)
-                mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
-                miner_net_weight += (area / img_area) * mult
+            # The current Golden schema has validator boxes, not masks. Score
+            # box area only; a miner-supplied polygon cannot stand in for mask
+            # ground truth or change the score. Polygon fidelity requires a
+            # separate mask-labeled Golden set and mask-IoU matching.
+            box = item.bounding_box
+            box_area = max(0.0, float(box[2] - box[0])) * max(
+                0.0, float(box[3] - box[1])
+            )
+            c_cls = canonical_carbon_class(item.hazard_class)
+            mult = CARBON_WEIGHT_MULTIPLIERS.get(c_cls, 1.0)
+            miner_net_weight += (box_area / img_area) * mult
         miner_net_weight = round(miner_net_weight, 6)
 
         if not gt_annotations:
+            if golden.classification_label:
+                return self._score_classification_items(
+                    miner_items, golden.classification_label, miner_net_weight
+                )
             # Golden image has zero ground-truth hazards.
             if not miner_items:
                 # Miner correctly reports "nothing here" — perfect fidelity.
@@ -152,7 +172,7 @@ class AnnotationFidelityScorer:
                 if idx in used_miner_idx:
                     continue
                 iou = iou_xyxy(item.bounding_box, gt.bounding_box)
-                if iou > best_iou:
+                if iou >= self.minimum_match_iou and iou > best_iou:
                     best_iou = iou
                     best_idx = idx
             if best_idx < 0:
@@ -201,24 +221,63 @@ class AnnotationFidelityScorer:
             miner_net_weight=float(miner_net_weight),
         )
 
+    def _score_classification_items(
+        self,
+        miner_items: Sequence[PerImageAnnotationItem],
+        classification_label: str,
+        miner_net_weight: float,
+    ) -> FidelityComponents:
+        """Score class-only Golden chips without inventing spatial boxes."""
+        class_scores = [
+            _class_label_match_score(item.hazard_class, classification_label)
+            for item in miner_items
+        ]
+        matched_count = sum(score > 0.0 for score in class_scores)
+        hallucinated_count = len(miner_items) - matched_count
+        class_avg = sum(class_scores) / max(1, len(class_scores))
+        if hallucinated_count and matched_count:
+            penalty = max(
+                0.20,
+                matched_count / (matched_count + 0.25 * hallucinated_count),
+            )
+        elif not matched_count:
+            penalty = 0.0
+        else:
+            penalty = 1.0
+        fidelity = max(0.0, min(1.0, class_avg * penalty))
+        return FidelityComponents(
+            iou=0.0,
+            class_severity=float(class_avg),
+            fidelity=float(fidelity),
+            hallucination_penalty=float(penalty),
+            matched_count=int(matched_count),
+            hallucinated_count=int(hallucinated_count),
+            ground_truth_count=1,
+            net_weight_agreement=1.0,
+            gt_net_weight=0.0,
+            miner_net_weight=float(miner_net_weight),
+            # A class label cannot validate the miner's box placement. Keep its
+            # class metric for reliability diagnostics, but do not turn it into
+            # an annotation reward without localized Golden geometry.
+            rewardable=False,
+        )
+
 
 
 def _class_match_score(
     item: PerImageAnnotationItem, gt: GoldenAnnotation
 ) -> float:
-    from template.miner.geometry import canonical_carbon_class
+    return _class_label_match_score(item.hazard_class, gt.hazard_class)
 
-    miner_c = canonical_carbon_class(item.hazard_class)
-    gt_c = canonical_carbon_class(gt.hazard_class)
-    if miner_c == gt_c:
-        return 1.0
-    # Both are tree crown categories (dense tree vs ordinary tree)
-    if {miner_c, gt_c} <= {"dense_tree", "ordinary_tree"}:
-        return 0.85
-    # Related vegetation categories (plantations, fields, trees, shrubs)
-    if {miner_c, gt_c} <= {"dense_tree", "ordinary_tree", "plant", "plantation", "field"}:
-        return 0.60
-    return 0.0
+
+def _class_label_match_score(miner_label: str, gt_label: str) -> float:
+    from template.miner.geometry import canonical_annotation_class
+
+    miner_c = canonical_annotation_class(miner_label)
+    gt_c = canonical_annotation_class(gt_label)
+    # Aliases are canonicalized above. Distinct ontology classes get no class
+    # credit; semantic proximity is not a substitute for a reviewed label.
+    return 1.0 if miner_c == gt_c else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -332,14 +391,18 @@ class PerMinerAnnotationScore:
     class_ece: Dict[str, float] = field(default_factory=dict)
     localization_iou_mean: float = 0.0
 
-    def average_score(self, *, golden_missing_penalty: float = 0.0) -> float:
+    def average_score(self, *, golden_missing_penalty: float | None = None) -> float:
+        """Mean fidelity; missing Golden rows are already explicit zero scores.
+
+        ``golden_missing_penalty`` remains accepted for state/config
+        compatibility, but a second multiplicative penalty over-counts those
+        zero rows and compounds with the per-image precision penalty.
+        """
         scores = list(self.fidelity_scores_by_image_id.values())
         if not scores:
             base = 0.0
         else:
             base = float(sum(scores) / len(scores))
-        if self.golden_missing_count > 0 and golden_missing_penalty > 0.0:
-            base *= float(golden_missing_penalty ** self.golden_missing_count)
         return float(max(0.0, min(1.0, base)))
 
     def hallucination_multiplier(self, per_event_penalty: float) -> float:
@@ -352,7 +415,9 @@ class PerMinerAnnotationScore:
         return float(per_event_penalty ** rel_hallucinated)
 
     def weight_for_class(self, hazard_class: str, *, epsilon: float = 1e-4) -> float:
-        key = (hazard_class or "").lower().strip()
+        from template.miner.geometry import canonical_annotation_class
+
+        key = canonical_annotation_class(hazard_class)
         if not key:
             return float(epsilon)
         return float(max(epsilon, self.class_weights.get(key, epsilon)))
@@ -362,16 +427,22 @@ class PerMinerAnnotationScore:
 class _ReliabilityAccumulator:
     decay: float = 0.95
     epsilon: float = 1e-4
+    minimum_match_iou: float = 0.50
     tp: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     fp: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     fn: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     severity_ok: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     severity_total: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
+    class_iou_sum: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
+    class_iou_count: Dict[int, Dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     iou_sum: Dict[int, float] = field(default_factory=lambda: defaultdict(float))
     iou_count: Dict[int, float] = field(default_factory=lambda: defaultdict(float))
 
     def _decay_uid(self, uid: int) -> None:
-        for bucket in (self.tp, self.fp, self.fn, self.severity_ok, self.severity_total):
+        for bucket in (
+            self.tp, self.fp, self.fn, self.severity_ok, self.severity_total,
+            self.class_iou_sum, self.class_iou_count,
+        ):
             for key in list(bucket[uid].keys()):
                 bucket[uid][key] *= self.decay
         self.iou_sum[uid] *= self.decay
@@ -383,6 +454,14 @@ class _ReliabilityAccumulator:
         for uid in uids:
             self._decay_uid(uid)
 
+    def reset_uid(self, uid: int) -> None:
+        """Discard all validation history associated with a replaced hotkey."""
+        for bucket in (
+            self.tp, self.fp, self.fn, self.severity_ok, self.severity_total,
+            self.class_iou_sum, self.class_iou_count, self.iou_sum, self.iou_count,
+        ):
+            bucket.pop(uid, None)
+
     def to_jsonable(self) -> dict:
         return {
             "tp": {str(uid): dict(classes) for uid, classes in self.tp.items()},
@@ -390,6 +469,8 @@ class _ReliabilityAccumulator:
             "fn": {str(uid): dict(classes) for uid, classes in self.fn.items()},
             "severity_ok": {str(uid): dict(classes) for uid, classes in self.severity_ok.items()},
             "severity_total": {str(uid): dict(classes) for uid, classes in self.severity_total.items()},
+            "class_iou_sum": {str(uid): dict(classes) for uid, classes in self.class_iou_sum.items()},
+            "class_iou_count": {str(uid): dict(classes) for uid, classes in self.class_iou_count.items()},
             "iou_sum": {str(uid): float(v) for uid, v in self.iou_sum.items()},
             "iou_count": {str(uid): float(v) for uid, v in self.iou_count.items()},
         }
@@ -397,7 +478,10 @@ class _ReliabilityAccumulator:
     @classmethod
     def from_jsonable(cls, payload: dict) -> _ReliabilityAccumulator:
         acc = cls()
-        for field_name in ("tp", "fp", "fn", "severity_ok", "severity_total"):
+        for field_name in (
+            "tp", "fp", "fn", "severity_ok", "severity_total",
+            "class_iou_sum", "class_iou_count",
+        ):
             if field_name in payload:
                 for uid_str, classes in payload[field_name].items():
                     for cls_name, val in classes.items():
@@ -414,17 +498,48 @@ class _ReliabilityAccumulator:
         miner_items: Sequence[PerImageAnnotationItem],
         golden: GoldenImage,
     ) -> None:
+        from template.miner.geometry import canonical_annotation_class
+
+        if golden.classification_label:
+            target = canonical_annotation_class(golden.classification_label)
+            best_item = None
+            best_score = 0.0
+            for item in miner_items:
+                match_score = _class_label_match_score(
+                    item.hazard_class, golden.classification_label
+                )
+                if match_score > best_score:
+                    best_score = match_score
+                    best_item = item
+            if best_item is None:
+                self.fn[uid][target] += 1.0
+            else:
+                predicted = canonical_annotation_class(best_item.hazard_class)
+                self.tp[uid][predicted] += best_score
+                self.fp[uid][predicted] += 1.0 - best_score
+                self.fn[uid][target] += 1.0 - best_score
+                for item in miner_items:
+                    item_class = canonical_annotation_class(item.hazard_class)
+                    if item_class != predicted:
+                        self.fp[uid][item_class] += 1.0
+            return
+
         used_miner_idx: set[int] = set()
         gt_annotations: Sequence[GoldenAnnotation] = golden.annotations
+        if not gt_annotations and not miner_items:
+            self.tp[uid]["_background"] += 1.0
+            return
+        if not gt_annotations:
+            self.fn[uid]["_background"] += 1.0
         for gt in gt_annotations:
-            gt_class = (gt.hazard_class or "").lower().strip()
+            gt_class = canonical_annotation_class(gt.hazard_class)
             best_idx = -1
             best_iou = 0.0
             for idx, item in enumerate(miner_items):
                 if idx in used_miner_idx:
                     continue
                 iou = iou_xyxy(item.bounding_box, gt.bounding_box)
-                if iou > best_iou:
+                if iou >= self.minimum_match_iou and iou > best_iou:
                     best_iou = iou
                     best_idx = idx
             if best_idx < 0:
@@ -434,12 +549,14 @@ class _ReliabilityAccumulator:
 
             used_miner_idx.add(best_idx)
             item = miner_items[best_idx]
-            pred_class = (item.hazard_class or "").lower().strip()
+            pred_class = canonical_annotation_class(item.hazard_class)
             self.iou_sum[uid] += best_iou
             self.iou_count[uid] += 1.0
             if pred_class == gt_class:
                 self.tp[uid][gt_class] += 1.0
                 self.severity_ok[uid][gt_class] += 1.0
+                self.class_iou_sum[uid][gt_class] += best_iou
+                self.class_iou_count[uid][gt_class] += 1.0
             else:
                 self.fp[uid][pred_class] += 1.0
                 self.fn[uid][gt_class] += 1.0
@@ -448,7 +565,7 @@ class _ReliabilityAccumulator:
         for idx, item in enumerate(miner_items):
             if idx in used_miner_idx:
                 continue
-            pred_class = (item.hazard_class or "").lower().strip()
+            pred_class = canonical_annotation_class(item.hazard_class)
             self.fp[uid][pred_class] += 1.0
 
     def finalize_uid(self, uid: int) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float], Dict[str, float], float]:
@@ -466,7 +583,18 @@ class _ReliabilityAccumulator:
             f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             sev_total = float(self.severity_total[uid].get(cls, 0.0))
             sev_acc = float(self.severity_ok[uid].get(cls, 0.0) / sev_total) if sev_total > 0 else 0.0
-            weight = max(self.epsilon, f1)
+            evidence = tp + fp + fn
+            evidence_factor = evidence / (evidence + 5.0) if evidence > 0.0 else 0.0
+            class_iou_n = float(self.class_iou_count[uid].get(cls, 0.0))
+            class_iou = (
+                float(self.class_iou_sum[uid].get(cls, 0.0) / class_iou_n)
+                if class_iou_n > 0.0 else 0.0
+            )
+            localization_factor = 0.5 + 0.5 * class_iou
+            # A single lucky Golden match cannot manufacture full voting
+            # reliability. Shrink F1 until the class has repeated evidence and
+            # discount weakly localized positives as well.
+            weight = max(self.epsilon, f1 * evidence_factor * localization_factor)
             class_weights[cls] = float(weight)
             class_f1[cls] = float(f1)
             class_sev[cls] = float(sev_acc)
@@ -514,11 +642,13 @@ def evaluate_round_annotations(
             golden = corpus.golden_lookup(image_id)
             if golden is not None:
                 comp = fidelity_scorer.score(items, golden)
-                score.fidelity_scores_by_image_id[image_id] = comp.fidelity
+                if comp.rewardable:
+                    score.fidelity_scores_by_image_id[image_id] = comp.fidelity
                 score.fidelity_components_by_image_id[image_id] = comp
                 score.total_hallucinations += comp.hallucinated_count
                 score.total_ground_truth += comp.ground_truth_count
-                reliability.update(uid, items, golden)
+                if comp.rewardable:
+                    reliability.update(uid, items, golden)
             else:
                 peers = {
                     other_uid: peer_items
@@ -535,9 +665,14 @@ def evaluate_round_annotations(
             expected_golden = {
                 image_id for image_id in expected_golden_ids_by_uid.get(uid, ())
             }
-        submitted = set(by_image.keys())
+        submitted_rewardable = set(score.fidelity_scores_by_image_id)
         for image_id in expected_golden:
-            if image_id in submitted:
+            golden = corpus.golden_lookup(image_id)
+            # Class-only rows have no spatial target and are excluded from both
+            # numerator and denominator whether the miner returns a row or not.
+            if golden is not None and golden.classification_label:
+                continue
+            if image_id in submitted_rewardable:
                 continue
             score.golden_missing_count += 1
             score.fidelity_scores_by_image_id[image_id] = 0.0

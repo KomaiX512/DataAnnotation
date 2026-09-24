@@ -163,14 +163,49 @@ def load_r2_credentials_from_env() -> R2AccessCredentials:
     )
 
 
-def download_bytes_from_r2(uri: str, *, creds: R2AccessCredentials) -> bytes:
-    """Download a single object from R2 via S3 API (validator / tests; no presigned GET)."""
+def download_bytes_from_r2(
+    uri: str,
+    *,
+    creds: R2AccessCredentials,
+    max_bytes: int | None = 16 * 1024 * 1024,
+) -> bytes:
+    """Download a bounded object from the public Cloudflare R2 S3 endpoint."""
     bucket, key = r2_uri_bucket_key(uri)
+    if bucket != creds.bucket_name:
+        raise ValueError("R2 artifact bucket does not match the miner credentials.")
+    endpoint = urlparse(creds.s3_endpoint)
+    hostname = (endpoint.hostname or "").lower().rstrip(".")
+    if (
+        endpoint.scheme != "https"
+        or not hostname.endswith(".r2.cloudflarestorage.com")
+        or endpoint.username is not None
+        or endpoint.password is not None
+        or endpoint.port not in (None, 443)
+    ):
+        raise ValueError("R2 endpoint must be a public HTTPS Cloudflare R2 endpoint.")
     client = _s3_client(creds)
     obj = client.get_object(Bucket=bucket, Key=key)
     body = obj["Body"]
     try:
-        return body.read()
+        declared_size = obj.get("ContentLength")
+        if (
+            max_bytes is not None
+            and declared_size is not None
+            and int(declared_size) > max_bytes
+        ):
+            raise ValueError("Artifact exceeds the maximum allowed size.")
+        data = bytearray()
+        while True:
+            chunk_size = 64 * 1024
+            if max_bytes is not None:
+                chunk_size = min(chunk_size, max_bytes + 1 - len(data))
+            chunk = body.read(chunk_size)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if max_bytes is not None and len(data) > max_bytes:
+                raise ValueError("Artifact exceeds the maximum allowed size.")
+        return bytes(data)
     finally:
         body.close()
 
@@ -240,4 +275,3 @@ def delete_objects_from_r2(
         except Exception:
             pass
     return deleted_count
-

@@ -5,9 +5,8 @@ Tests for the three critical fixes:
   C. Single-miner fallback policy
 """
 import json
-import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -80,16 +79,60 @@ class TestZeroDetectionFidelity:
         assert result.fidelity == 0.0
         assert result.matched_count == 0
 
+    def test_miner_polygon_area_cannot_replace_box_ground_truth(self):
+        from template.protocol import PerImageAnnotationItem
+
+        golden = self._make_golden(annotations=(
+            GoldenAnnotation(
+                hazard_class="ordinary_tree",
+                bounding_box=(100, 100, 110, 110),
+                severity="low",
+            ),
+        ))
+        box = [100, 100, 110, 110]
+        without_polygon = PerImageAnnotationItem(
+            hazard_class="ordinary_tree", bounding_box=box
+        )
+        tiny_polygon = PerImageAnnotationItem(
+            hazard_class="ordinary_tree",
+            bounding_box=box,
+            polygon=[[100, 100], [100.01, 100], [100, 100.01]],
+            area=1e300,
+            weight=1e300,
+        )
+        scorer = AnnotationFidelityScorer()
+        plain = scorer.score([without_polygon], golden)
+        forged = scorer.score([tiny_polygon], golden)
+        assert forged.fidelity == pytest.approx(plain.fidelity)
+        assert forged.miner_net_weight == pytest.approx(plain.miner_net_weight)
+
+    def test_related_but_distinct_classes_do_not_get_exact_label_credit(self):
+        from template.protocol import PerImageAnnotationItem
+
+        golden = self._make_golden(annotations=(
+            GoldenAnnotation(
+                hazard_class="intact_forest",
+                bounding_box=(100, 100, 200, 200),
+                severity="medium",
+            ),
+        ))
+        item = PerImageAnnotationItem(
+            hazard_class="dense_tree",
+            bounding_box=[100, 100, 200, 200],
+        )
+        result = AnnotationFidelityScorer().score([item], golden)
+        assert result.class_severity == 0.0
+        assert result.fidelity < 0.75
+
 
 # ===========================================================================
 # Task C: Single-miner fallback
 # ===========================================================================
 
-class TestSingleMinerFallback:
-    """Verify that the single-miner fallback policy works correctly."""
+class TestSingleMinerEvidenceGate:
+    """A single response must not certify its own annotations."""
 
-    def test_single_miner_fallback_enabled(self):
-        """With fallback enabled, a reliable single miner is adopted."""
+    def test_single_miner_always_escalates(self):
         from template.hazard.annotation_eval import PerMinerAnnotationScore
         from template.hazard.dataset_assembler import DatasetAssembler
         from template.protocol import PerImageAnnotationItem
@@ -115,76 +158,15 @@ class TestSingleMinerFallback:
         score = PerMinerAnnotationScore(uid=0)
         score.fidelity_scores_by_image_id = {"golden1": 0.8}
 
-        with patch.dict(os.environ, {
-            "FALLBACK_SINGLE_MINER_ENABLED": "1",
-            "FALLBACK_SINGLE_MINER_MIN_RELIABILITY": "0.3",
-        }):
-            # We need to reimport to pick up the env var
-            import importlib
-            import template.hazard.dataset_assembler as da_mod
-            orig_enabled = da_mod._FALLBACK_SINGLE_MINER_ENABLED
-            orig_reliability = da_mod._FALLBACK_SINGLE_MINER_MIN_RELIABILITY
-            da_mod._FALLBACK_SINGLE_MINER_ENABLED = True
-            da_mod._FALLBACK_SINGLE_MINER_MIN_RELIABILITY = 0.3
-
-            try:
-                result = assembler._aggregate_image(
-                    image_id="pool_image_1",
-                    image_votes={0: [item]},
-                    per_miner_scores={0: score},
-                    miner_hotkeys={0: "hotkey_0"},
-                    priors={"_background": 0.3, "hardhat": 0.7},
-                )
-            finally:
-                da_mod._FALLBACK_SINGLE_MINER_ENABLED = orig_enabled
-                da_mod._FALLBACK_SINGLE_MINER_MIN_RELIABILITY = orig_reliability
-
-        assert result["escalation_required"] is False
-        assert result["chosen_uid"] == 0
-        assert len(result["objects"]) == 1
-        assert result["objects"][0].aggregation_method == "single_miner_fallback_v1"
-
-    def test_single_miner_fallback_disabled_escalates(self):
-        """With fallback disabled, a single miner always triggers escalation."""
-        from template.hazard.annotation_eval import PerMinerAnnotationScore
-        from template.hazard.dataset_assembler import DatasetAssembler
-        from template.protocol import PerImageAnnotationItem
-
-        corpus = MagicMock()
-        corpus.is_golden.return_value = False
-        corpus.golden_images.return_value = []
-
-        assembler = DatasetAssembler(
-            corpus=corpus,
-            storage_prefix="file:///tmp/test",
+        result = assembler._aggregate_image(
+            image_id="pool_image_1",
+            image_votes={0: [item]},
+            per_miner_scores={0: score},
+            miner_hotkeys={0: "hotkey_0"},
+            priors={"_background": 0.3, "hardhat": 0.7},
         )
-
-        item = PerImageAnnotationItem(
-            hazard_class="hardhat",
-            bounding_box=[10, 10, 50, 50],
-            confidence=0.9,
-            severity="medium",
-        )
-
-        score = PerMinerAnnotationScore(uid=0)
-        score.fidelity_scores_by_image_id = {"golden1": 0.8}
-
-        import template.hazard.dataset_assembler as da_mod
-        orig_enabled = da_mod._FALLBACK_SINGLE_MINER_ENABLED
-        da_mod._FALLBACK_SINGLE_MINER_ENABLED = False
-
-        try:
-            result = assembler._aggregate_image(
-                image_id="pool_image_1",
-                image_votes={0: [item]},
-                per_miner_scores={0: score},
-                miner_hotkeys={0: "hotkey_0"},
-                priors={"_background": 0.3, "hardhat": 0.7},
-            )
-        finally:
-            da_mod._FALLBACK_SINGLE_MINER_ENABLED = orig_enabled
-
         assert result["escalation_required"] is True
+        assert result["chosen_uid"] == 0
         assert result["escalation_reason"] == "only_one_miner"
 
 

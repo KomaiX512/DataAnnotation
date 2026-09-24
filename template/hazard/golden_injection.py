@@ -61,11 +61,17 @@ class GoldenInjector:
     def build_plan(self, rng: random.Random) -> InjectionPlan:
         """Construct an :class:`InjectionPlan` for one miner request."""
 
-        golden = self.corpus.golden_images()
+        # Only spatially labeled examples can qualify annotation rewards and
+        # consensus trust. Class-only chips remain diagnostics, not Golden
+        # evidence for an output that contains boxes/polygons.
+        golden = [
+            image for image in self.corpus.golden_images()
+            if not image.classification_label
+        ]
         unlabeled = self.corpus.annotation_images()
         if len(golden) < self.golden_per_request:
             raise RuntimeError(
-                f"Golden Set has only {len(golden)} images; "
+                f"Golden Set has only {len(golden)} spatially rewardable images; "
                 f"cannot inject {self.golden_per_request} per request."
             )
         non_golden_needed = self.request_size - self.golden_per_request

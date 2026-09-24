@@ -4,12 +4,13 @@ from PIL import Image
 
 from template.miner.geometry import (
     CARBON_WEIGHT_MULTIPLIERS,
+    canonical_annotation_class,
     canonical_carbon_class,
     extract_canopy_geometry,
     compute_image_net_metrics,
 )
 from template.miner.ecological_reasoning import EcologicalVisionEngine
-from template.hazard.annotation_eval import AnnotationFidelityScorer
+from template.hazard.annotation_eval import AnnotationFidelityScorer, _ReliabilityAccumulator
 from template.hazard.image_corpus import GoldenAnnotation, GoldenImage
 from template.protocol import PerImageAnnotationItem
 
@@ -31,6 +32,45 @@ def test_carbon_multipliers_and_canonical_classes():
     assert canonical_carbon_class("field") == "field"
     assert canonical_carbon_class("shrub") == "plant"
     assert canonical_carbon_class("regrowth") == "plant"
+
+
+def test_taxonomy_aliases_are_exact_and_unknowns_stay_distinct():
+    assert canonical_annotation_class("tree") == "ordinary_tree"
+    assert canonical_annotation_class("individual_tree") == "ordinary_tree"
+    assert canonical_annotation_class("fire_scar") == "fire_scar"
+    assert canonical_annotation_class("deforestation") == "deforestation"
+    assert canonical_annotation_class("water") == "water"
+    assert canonical_annotation_class("urban") == "urban"
+    assert canonical_annotation_class("unlisted_species") == "unlisted_species"
+
+
+def test_fidelity_and_reliability_share_alias_normalization():
+    from pathlib import Path
+
+    golden = GoldenImage(
+        image_id="alias-golden",
+        image_path=Path("/dev/null"),
+        image_url="",
+        width=100,
+        height=100,
+        annotations=(
+            GoldenAnnotation(
+                hazard_class="individual_tree",
+                bounding_box=(10, 10, 50, 50),
+                severity="none",
+            ),
+        ),
+    )
+    item = PerImageAnnotationItem(
+        hazard_class="tree", bounding_box=[10, 10, 50, 50]
+    )
+    fidelity = AnnotationFidelityScorer().score([item], golden)
+    reliability = _ReliabilityAccumulator()
+    reliability.update(9, [item], golden)
+    weights, f1, *_ = reliability.finalize_uid(9)
+    assert fidelity.fidelity > 0.9
+    assert 0.0 < weights["ordinary_tree"] < 0.2
+    assert f1["ordinary_tree"] == pytest.approx(1.0)
 
 
 def test_extract_canopy_geometry_carbon_weight():
