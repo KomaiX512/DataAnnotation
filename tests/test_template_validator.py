@@ -471,3 +471,23 @@ def test_broad_softmax_caps_cumulative_floor_at_twenty_percent():
     assert float(shaped.sum()) == pytest.approx(1.0)
     assert shaped[1] == pytest.approx(0.01, abs=1e-6)
     assert shaped[0] == pytest.approx(0.81, abs=1e-6)
+
+
+def test_set_weights_skips_when_scores_are_zero():
+    from unittest.mock import MagicMock
+    from template.base.validator import BaseValidatorNeuron
+
+    validator = MagicMock(spec=BaseValidatorNeuron)
+    validator.scores = np.zeros(16, dtype=np.float32)
+    validator.metagraph = MagicMock()
+    validator.metagraph.uids = np.arange(16)
+    validator.config = MagicMock()
+    validator.config.netuid = 498
+    validator.subtensor = MagicMock()
+
+    # Call BaseValidatorNeuron.set_weights directly on mock
+    BaseValidatorNeuron.set_weights(validator)
+
+    # Subtensor.set_weights MUST NOT be called when scores are zero
+    validator.subtensor.set_weights.assert_not_called()
+

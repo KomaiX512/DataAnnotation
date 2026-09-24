@@ -139,16 +139,44 @@ class SelfHostedBackend(BaseModelBackend):
             weight = entry.get("weight")
             conf = entry.get("confidence")
             if image_id and hazard_class and len(bbox) == 4:
-                results.setdefault(image_id, []).append(
-                    PerImageAnnotationItem(
+                try:
+                    x1, y1, x2, y2 = [float(v) for v in bbox]
+                    sanitized_poly = polygon
+                    if sanitized_poly and len(sanitized_poly) >= 3:
+                        xs = [pt[0] for pt in sanitized_poly]
+                        ys = [pt[1] for pt in sanitized_poly]
+                        x1 = min(x1, min(xs))
+                        y1 = min(y1, min(ys))
+                        x2 = max(x2, max(xs))
+                        y2 = max(y2, max(ys))
+                    else:
+                        sanitized_poly = None
+
+                    item = PerImageAnnotationItem(
                         hazard_class=hazard_class,
-                        bounding_box=[float(v) for v in bbox],
-                        polygon=polygon,
+                        bounding_box=[x1, y1, x2, y2],
+                        polygon=sanitized_poly,
                         area=float(area) if area is not None else None,
                         weight=float(weight) if weight is not None else None,
                         confidence=float(conf) if conf is not None else None,
                     )
-                )
+                    results.setdefault(image_id, []).append(item)
+                except Exception as val_err:
+                    # Fallback to bounding box without polygon if contour validation fails
+                    try:
+                        item = PerImageAnnotationItem(
+                            hazard_class=hazard_class,
+                            bounding_box=[float(v) for v in bbox],
+                            polygon=None,
+                            area=float(area) if area is not None else None,
+                            weight=float(weight) if weight is not None else None,
+                            confidence=float(conf) if conf is not None else None,
+                        )
+                        results.setdefault(image_id, []).append(item)
+                    except Exception as fallback_err:
+                        bt.logging.warning(
+                            f"Dropping invalid annotation item for {image_id}: {val_err} / {fallback_err}"
+                        )
 
         # Ensure all requested image_ids have an entry (even if empty)
         for img in inference_images:

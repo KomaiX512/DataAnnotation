@@ -402,11 +402,18 @@ class QwenAnnotationEngine:
                         multiplier = CARBON_WEIGHT_MULTIPLIERS.get("field", 0.7)
                         f_weight = round(area_ratio * multiplier, 6)
                         f_cls = "Agroforestry Field" if has_fields else "field"
+                        bx, by, bw, bh = cv2.boundingRect(c)
+                        xs = [pt[0] for pt in f_poly]
+                        ys = [pt[1] for pt in f_poly]
+                        bx1 = min(float(bx), min(xs))
+                        by1 = min(float(by), min(ys))
+                        bx2 = max(float(bx + bw), max(xs))
+                        by2 = max(float(by + bh), max(ys))
                         annotations.append(
                             AnnotationItem(
                                 image_id=image_id,
                                 hazard_class=f_cls,
-                                bounding_box=[float(x), float(y), float(x + bw), float(y + bh)],
+                                bounding_box=[bx1, by1, bx2, by2],
                                 polygon=f_poly,
                                 area=round(c_area, 2),
                                 weight=f_weight,

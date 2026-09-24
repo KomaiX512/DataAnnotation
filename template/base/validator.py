@@ -249,9 +249,12 @@ class BaseValidatorNeuron(BaseNeuron):
         # Compute the norm of the scores
         norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)
 
-        # Check if the norm is zero or contains NaN values
-        if np.any(norm == 0) or np.isnan(norm).any():
-            norm = np.ones_like(norm)  # Avoid division by zero or NaN
+        # Check if the norm is zero, contains NaN values, or no positive scores exist
+        if np.any(norm == 0) or np.isnan(norm).any() or not np.any(self.scores > 0):
+            bt.logging.warning(
+                "Scores are all zero, non-positive, or NaN; skipping set_weights to avoid all-ones uniform weights."
+            )
+            return
 
         # Compute raw_weights safely
         raw_weights = self.scores / norm

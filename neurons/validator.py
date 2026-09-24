@@ -105,6 +105,12 @@ class Validator(BaseValidatorNeuron):
             floor=self.config.neuron.incentive_floor,
             min_score=self.config.neuron.incentive_min_score,
         )
+        if not np.any(self.scores > 0):
+            bt.logging.warning(
+                "No miners have positive incentive scores; skipping set_weights to prevent assigning uniform weights to inactive/offline nodes."
+            )
+            self.scores = raw_scores
+            return
         try:
             endpoint = str(getattr(self.config.subtensor, "chain_endpoint", ""))
             force_local = os.environ.get("FORCE_LOCAL_SET_WEIGHTS", "").strip().lower() in (
