@@ -409,10 +409,25 @@ def infer(req: InferRequest):
 
     all_annotations: List[AnnotationItem] = []
     t0 = time.time()
-    for img_spec in req.images:
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_img(img_spec):
         try:
             raw_bytes = _load_image_bytes(img_spec.image_url)
             pil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+            return img_spec, pil_img
+        except Exception as e:
+            logger.warning("[infer] Error downloading image %s: %s", img_spec.image_id, e)
+            return img_spec, None
+
+    with ThreadPoolExecutor(max_workers=min(16, max(1, len(req.images)))) as ex:
+        loaded_images = list(ex.map(_fetch_img, req.images))
+
+    for img_spec, pil_img in loaded_images:
+        if pil_img is None:
+            continue
+        try:
             anns = _engine.annotate_image(pil_img, img_spec.image_id)
             all_annotations.extend(anns)
         except Exception as e:
