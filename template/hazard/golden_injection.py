@@ -69,19 +69,15 @@ class GoldenInjector:
             if not image.classification_label
         ]
         unlabeled = self.corpus.annotation_images()
-        if len(golden) < self.golden_per_request:
+        golden_count = min(self.golden_per_request, len(golden))
+        if golden_count == 0 and self.golden_per_request > 0:
             raise RuntimeError(
-                f"Golden Set has only {len(golden)} spatially rewardable images; "
+                f"Golden Set has no spatially rewardable images; "
                 f"cannot inject {self.golden_per_request} per request."
             )
-        non_golden_needed = self.request_size - self.golden_per_request
-        if len(unlabeled) < non_golden_needed:
-            raise RuntimeError(
-                f"Annotation pool has only {len(unlabeled)} images; "
-                f"cannot fill {non_golden_needed} non-golden slots."
-            )
+        non_golden_needed = min(self.request_size - golden_count, len(unlabeled))
 
-        chosen_golden: Sequence[GoldenImage] = rng.sample(golden, self.golden_per_request)
+        chosen_golden: Sequence[GoldenImage] = rng.sample(golden, golden_count)
         chosen_non_golden: Sequence[UnlabeledImage] = rng.sample(unlabeled, non_golden_needed)
 
         ordered: List[Tuple[str, str]] = []
