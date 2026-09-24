@@ -717,7 +717,7 @@ def infer(req: InferRequest):
     if _engine is None or _engine_checkpoint != checkpoint_path:
         try:
             from template.miner.ecological_reasoning import EcologicalVisionEngine
-            _engine = EcologicalVisionEngine(checkpoint_path=checkpoint_path)
+            _engine = EcologicalVisionEngine(checkpoint_path=checkpoint_path, qwen_path="", device="cpu")
             _engine_checkpoint = checkpoint_path
         except Exception as exc:
             logger.warning("[infer] Could not initialize EcologicalVisionEngine: %s", exc)
