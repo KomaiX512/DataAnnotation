@@ -19,14 +19,6 @@ from template.hazard.image_corpus import ImageCorpus
 from template.protocol import PerImageAnnotationItem, R2AccessCredentials
 
 _BACKGROUND_CLASS = "_background"
-_DEFAULT_ACCEPT_CONFIDENCE = max(
-    0.9, min(1.0, float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", "0.9")))
-)
-_DEFAULT_ACCEPT_SEVERITY_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_SEVERITY_CONFIDENCE", "0.8"))
-_DEFAULT_MIN_VOTERS = max(3, int(os.getenv("DEFAULT_MIN_VOTERS", "3")))
-_DEFAULT_MIN_OBJECT_VOTES = max(3, int(os.getenv("DEFAULT_MIN_OBJECT_VOTES", "3")))
-_MIN_OBJECT_SUPPORT_RATIO = 0.80
-_MAX_AUTO_ACCEPT_BOX_AREA_RATIO = 0.50
 
 
 def _read_unit_interval_env(name: str, default: str) -> float:
@@ -39,6 +31,25 @@ def _read_unit_interval_env(name: str, default: str) -> float:
     return value
 
 
+_DEFAULT_ACCEPT_CONFIDENCE = _read_unit_interval_env("DEFAULT_ACCEPT_CONFIDENCE", "0.9")
+_DEFAULT_ACCEPT_SEVERITY_CONFIDENCE = float(os.getenv("DEFAULT_ACCEPT_SEVERITY_CONFIDENCE", "0.8"))
+_DEFAULT_MIN_VOTERS = max(1, int(os.getenv("DEFAULT_MIN_VOTERS", "3")))
+_DEFAULT_MIN_OBJECT_VOTES = max(1, int(os.getenv("DEFAULT_MIN_OBJECT_VOTES", "3")))
+_MIN_OBJECT_SUPPORT_RATIO = _read_unit_interval_env("MIN_OBJECT_SUPPORT_RATIO", "0.80")
+_MAX_AUTO_ACCEPT_BOX_AREA_RATIO = 0.50
+
+# Single-miner fallback — adopt annotations from a lone/top reliable miner
+# when consensus cannot be formed, ensuring early adopters and top performers
+# have their high-fidelity dataset annotations captured into the commercial dataset.
+_FALLBACK_SINGLE_MINER_ENABLED = os.getenv(
+    "FALLBACK_SINGLE_MINER_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes")
+_FALLBACK_SINGLE_MINER_MIN_RELIABILITY = float(
+    os.getenv("FALLBACK_SINGLE_MINER_MIN_RELIABILITY", "0.05")
+)
+_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL = os.getenv(
+    "FALLBACK_SINGLE_MINER_AGGREGATION_LABEL", "single_miner_fallback_v1"
+).strip()
 _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN = _read_unit_interval_env(
     "DEFAULT_MIN_MEAN_IOU_TO_MEDIAN", "0.7"
 )
@@ -260,6 +271,31 @@ class DatasetAssembler:
     ledger: AdoptionLedger = field(default_factory=AdoptionLedger)
     draw_boxes: bool = True
     annotated_prefix: str = "commercial/annotated-images/"
+    min_voters: Optional[int] = None
+    min_object_votes: Optional[int] = None
+    accept_confidence: Optional[float] = None
+    min_object_support_ratio: Optional[float] = None
+    fallback_single_miner: Optional[bool] = None
+    fallback_min_reliability: Optional[float] = None
+
+    def __post_init__(self):
+        if self.min_voters is None:
+            self.min_voters = max(1, int(os.getenv("DEFAULT_MIN_VOTERS", str(_DEFAULT_MIN_VOTERS))))
+        if self.min_object_votes is None:
+            self.min_object_votes = max(1, int(os.getenv("DEFAULT_MIN_OBJECT_VOTES", str(_DEFAULT_MIN_OBJECT_VOTES))))
+        if self.accept_confidence is None:
+            self.accept_confidence = float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", str(_DEFAULT_ACCEPT_CONFIDENCE)))
+        if self.min_object_support_ratio is None:
+            self.min_object_support_ratio = float(os.getenv("MIN_OBJECT_SUPPORT_RATIO", str(_MIN_OBJECT_SUPPORT_RATIO)))
+        if self.fallback_single_miner is None:
+            self.fallback_single_miner = os.getenv(
+                "FALLBACK_SINGLE_MINER_ENABLED",
+                "1" if _FALLBACK_SINGLE_MINER_ENABLED else "0",
+            ).strip().lower() in ("1", "true", "yes")
+        if self.fallback_min_reliability is None:
+            self.fallback_min_reliability = float(
+                os.getenv("FALLBACK_SINGLE_MINER_MIN_RELIABILITY", str(_FALLBACK_SINGLE_MINER_MIN_RELIABILITY))
+            )
 
     def assemble(
         self,
@@ -394,7 +430,7 @@ class DatasetAssembler:
                     score=float(aggregated["score"]),
                     chosen_uid=int(aggregated["chosen_uid"]),
                     is_golden=False,
-                    aggregation_method="bayesian_dawid_skene_v1",
+                    aggregation_method=str(aggregated.get("aggregation_method", "bayesian_dawid_skene_v1")),
                     image_url=image_url,
                     width=int(width),
                     height=int(height),
@@ -532,7 +568,16 @@ class DatasetAssembler:
 
         parsed = urlparse(self.storage_prefix or "")
         if parsed.scheme == "file":
-            return self._export_local(body, parsed, round_id)
+            local_uri = self._export_local(body, parsed, round_id)
+            if creds is not None:
+                try:
+                    self._export_r2_mirror(body, round_id, creds)
+                except Exception as exc:
+                    bt.logging.warning(
+                        "event=r2_commercial_export_mirror_error round=%s error=%s",
+                        round_id, exc,
+                    )
+            return local_uri
         if parsed.scheme in ("r2", "s3"):
             if creds is None:
                 raise ValueError(
@@ -717,12 +762,12 @@ class DatasetAssembler:
 
     def _acceptance_thresholds(self) -> Dict[str, float]:
         return {
-            "confidence": _DEFAULT_ACCEPT_CONFIDENCE,
+            "confidence": float(self.accept_confidence if self.accept_confidence is not None else _DEFAULT_ACCEPT_CONFIDENCE),
             "severity_confidence": _DEFAULT_ACCEPT_SEVERITY_CONFIDENCE,
-            "min_voters": float(_DEFAULT_MIN_VOTERS),
-            "min_independent_voters": float(_DEFAULT_MIN_VOTERS),
-            "min_object_votes": float(_DEFAULT_MIN_OBJECT_VOTES),
-            "min_object_support_ratio": _MIN_OBJECT_SUPPORT_RATIO,
+            "min_voters": float(self.min_voters if self.min_voters is not None else _DEFAULT_MIN_VOTERS),
+            "min_independent_voters": float(self.min_voters if self.min_voters is not None else _DEFAULT_MIN_VOTERS),
+            "min_object_votes": float(self.min_object_votes if self.min_object_votes is not None else _DEFAULT_MIN_OBJECT_VOTES),
+            "min_object_support_ratio": float(self.min_object_support_ratio if self.min_object_support_ratio is not None else _MIN_OBJECT_SUPPORT_RATIO),
             "max_auto_accept_box_area_ratio": _MAX_AUTO_ACCEPT_BOX_AREA_RATIO,
             "min_mean_iou_to_median": _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN,
         }
@@ -732,6 +777,108 @@ class DatasetAssembler:
         if not values:
             return ""
         return f"{values[0]}/{values[-1]}"
+
+    def _adopt_top_miner_annotations(
+        self,
+        *,
+        image_id: str,
+        image_votes: Mapping[int, Sequence[PerImageAnnotationItem]],
+        per_miner_scores: Mapping[int, PerMinerAnnotationScore],
+        miner_hotkeys: Mapping[int, str],
+    ) -> Optional[dict]:
+        """Adopt annotations from the top-performing miner when consensus cannot be reached."""
+        if not self.fallback_single_miner or not image_votes:
+            return None
+        # Find candidate miners with non-empty annotations
+        candidates = [uid for uid, items in image_votes.items() if items]
+        if not candidates:
+            return None
+        top_uid = max(
+            candidates,
+            key=lambda u: (
+                per_miner_scores[u].average_score() if u in per_miner_scores else 0.0,
+                -u,
+            ),
+        )
+        items = image_votes.get(top_uid, [])
+        if not items:
+            return None
+        score = per_miner_scores.get(top_uid)
+        reliability = score.average_score() if score is not None else 0.0
+        min_rel = self.fallback_min_reliability if self.fallback_min_reliability is not None else _FALLBACK_SINGLE_MINER_MIN_RELIABILITY
+        if reliability < min_rel:
+            return None
+
+        width, height = self._image_dims(image_id)
+        image_area = float(max(1, width * height))
+        from template.miner.geometry import (
+            CARBON_WEIGHT_MULTIPLIERS,
+            canonical_carbon_class,
+        )
+        from template.hazard.image_corpus import _severity_for_label
+
+        fallback_objects: List[AggregatedObject] = []
+        for idx, item in enumerate(items):
+            cls = _safe_class(item.hazard_class)
+            sev = _severity_for_label(cls)
+            box = tuple(float(v) for v in item.bounding_box) if item.bounding_box and len(item.bounding_box) == 4 else None
+            obj_area = None
+            obj_weight = None
+            if box is not None:
+                obj_area = round(
+                    max(0.0, (box[2] - box[0]) * (box[3] - box[1])), 2
+                )
+                carbon_class = canonical_carbon_class(cls)
+                obj_weight = round(
+                    (obj_area / image_area)
+                    * CARBON_WEIGHT_MULTIPLIERS.get(carbon_class, 1.0),
+                    6,
+                )
+            vote = MinerVote(
+                miner_uid=int(top_uid),
+                miner_hotkey=str(miner_hotkeys.get(top_uid, "")),
+                class_voted=cls,
+                severity_voted=sev,
+                confidence=float(reliability),
+                bounding_box=box,
+                reliability_weight_at_aggregation=float(reliability),
+            )
+            fallback_objects.append(
+                AggregatedObject(
+                    object_cluster_id=f"{image_id}-fb-{idx}",
+                    accepted_hazard_class=cls,
+                    accepted_severity=sev,
+                    confidence=float(reliability),
+                    severity_confidence=float(reliability),
+                    class_posterior_distribution={
+                        cls: float(reliability),
+                        _BACKGROUND_CLASS: round(max(0.0, 1.0 - float(reliability)), 6),
+                    },
+                    severity_posterior_distribution={sev: 1.0},
+                    fused_bounding_box=box,
+                    fused_polygon=None,
+                    area=obj_area,
+                    weight=obj_weight,
+                    spatial_mean_iou_to_median=1.0,
+                    miner_votes=[vote],
+                    escalation_reason=None,
+                    aggregation_method=_FALLBACK_SINGLE_MINER_AGGREGATION_LABEL,
+                )
+            )
+
+        bt.logging.info(
+            f"event=single_miner_fallback_adopted image_id={image_id[:16]} "
+            f"top_uid={top_uid} reliability={reliability:.4f} objects={len(fallback_objects)}"
+        )
+        return {
+            "score": float(reliability),
+            "chosen_uid": int(top_uid),
+            "objects": fallback_objects,
+            "escalation_required": False,
+            "escalation_reason": None,
+            "miner_contribution_scores": {int(top_uid): 1.0},
+            "aggregation_method": _FALLBACK_SINGLE_MINER_AGGREGATION_LABEL,
+        }
 
     def _aggregate_image(
         self,
@@ -743,14 +890,25 @@ class DatasetAssembler:
         priors: Mapping[str, float],
     ) -> dict:
         miner_ids = sorted(image_votes.keys())
-        if len(miner_ids) < 2:
+        min_voters = self.min_voters if self.min_voters is not None else _DEFAULT_MIN_VOTERS
+        if len(miner_ids) < 2 or len(miner_ids) < min_voters:
+            adopted = self._adopt_top_miner_annotations(
+                image_id=image_id,
+                image_votes=image_votes,
+                per_miner_scores=per_miner_scores,
+                miner_hotkeys=miner_hotkeys,
+            )
+            if adopted is not None:
+                return adopted
+            sole_uid = miner_ids[0] if miner_ids else -1
             return {
                 "score": 0.0,
-                "chosen_uid": miner_ids[0] if miner_ids else -1,
+                "chosen_uid": sole_uid,
                 "objects": [],
                 "escalation_required": True,
-                "escalation_reason": "only_one_miner",
+                "escalation_reason": "only_one_miner" if len(miner_ids) < 2 else "insufficient_miners_on_image",
                 "miner_contribution_scores": {},
+                "aggregation_method": "bayesian_dawid_skene_v1",
             }
         clusters = self._cluster_boxes(image_votes, per_miner_scores)
         if not clusters:
@@ -761,6 +919,7 @@ class DatasetAssembler:
                 "escalation_required": True,
                 "escalation_reason": "no_clusters",
                 "miner_contribution_scores": {},
+                "aggregation_method": "bayesian_dawid_skene_v1",
             }
 
         objects: List[AggregatedObject] = []
@@ -810,6 +969,14 @@ class DatasetAssembler:
                     escalation_reason=reason,
                 )
         if escalations:
+            adopted = self._adopt_top_miner_annotations(
+                image_id=image_id,
+                image_votes=image_votes,
+                per_miner_scores=per_miner_scores,
+                miner_hotkeys=miner_hotkeys,
+            )
+            if adopted is not None:
+                return adopted
             return {
                 "score": 0.0,
                 "chosen_uid": max(
@@ -819,6 +986,7 @@ class DatasetAssembler:
                 "escalation_required": True,
                 "escalation_reason": ";".join(sorted(set(escalations))),
                 "miner_contribution_scores": {},
+                "aggregation_method": "bayesian_dawid_skene_v1",
             }
         total_contribution = sum(contributions.values())
         if total_contribution > 0.0:
@@ -837,6 +1005,7 @@ class DatasetAssembler:
             "escalation_required": False,
             "escalation_reason": None,
             "miner_contribution_scores": contributions,
+            "aggregation_method": "bayesian_dawid_skene_v1",
         }
 
     def _cluster_boxes(
@@ -933,13 +1102,17 @@ class DatasetAssembler:
             if _safe_class(item.hazard_class) == accepted_class
         ]
         class_support_ratio = len(class_support_uids) / max(1, len(all_miner_ids))
-        if len(class_support_uids) < _DEFAULT_MIN_OBJECT_VOTES:
+        min_obj_votes = self.min_object_votes if self.min_object_votes is not None else _DEFAULT_MIN_OBJECT_VOTES
+        min_support_ratio = self.min_object_support_ratio if self.min_object_support_ratio is not None else _MIN_OBJECT_SUPPORT_RATIO
+        accept_conf = self.accept_confidence if self.accept_confidence is not None else _DEFAULT_ACCEPT_CONFIDENCE
+        min_voters = self.min_voters if self.min_voters is not None else _DEFAULT_MIN_VOTERS
+        if len(class_support_uids) < min_obj_votes:
             escalation_reason = "insufficient_object_votes"
-        elif class_support_ratio < _MIN_OBJECT_SUPPORT_RATIO:
+        elif class_support_ratio < min_support_ratio:
             escalation_reason = "insufficient_object_support_ratio"
-        elif conf < _DEFAULT_ACCEPT_CONFIDENCE:
+        elif conf < accept_conf:
             escalation_reason = "low_class_confidence"
-        elif len(all_miner_ids) < _DEFAULT_MIN_VOTERS:
+        elif len(all_miner_ids) < min_voters:
             escalation_reason = "insufficient_miners_on_image"
         elif mean_iou_to_median < _DEFAULT_MIN_MEAN_IOU_TO_MEDIAN:
             escalation_reason = "high_spatial_disagreement"
@@ -1160,6 +1333,51 @@ class DatasetAssembler:
             f"event=dataset_export_remote round={round_id} uri={uri} bytes={len(body)}"
         )
         return uri
+
+    def _export_r2_mirror(
+        self,
+        body: bytes,
+        round_id: str,
+        creds: R2AccessCredentials,
+    ) -> str:
+        try:
+            import boto3
+        except ImportError:
+            return ""
+        bucket = creds.bucket_name
+        client = boto3.client(
+            "s3",
+            endpoint_url=creds.s3_endpoint,
+            aws_access_key_id=creds.access_key_id,
+            aws_secret_access_key=creds.secret_access_key,
+            region_name="auto",
+        )
+        round_key = f"commercial/commercial-dataset-{round_id}.jsonl"
+        client.put_object(
+            Bucket=bucket,
+            Key=round_key,
+            Body=body,
+            ContentType="application/x-ndjson",
+        )
+        master_key = "commercial/commercial-dataset.jsonl"
+        try:
+            existing = client.get_object(Bucket=bucket, Key=master_key)
+            existing_body = existing["Body"].read()
+            new_master = existing_body + body
+        except Exception:
+            new_master = body
+        client.put_object(
+            Bucket=bucket,
+            Key=master_key,
+            Body=new_master,
+            ContentType="application/x-ndjson",
+        )
+        uri = f"r2://{bucket}/{round_key}"
+        bt.logging.info(
+            f"event=dataset_export_r2_mirror round={round_id} uri={uri} bytes={len(body)}"
+        )
+        return uri
+
 
 
 def _safe_class(value: str) -> str:

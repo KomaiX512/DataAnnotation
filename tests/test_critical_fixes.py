@@ -169,6 +169,46 @@ class TestSingleMinerEvidenceGate:
         assert result["chosen_uid"] == 0
         assert result["escalation_reason"] == "only_one_miner"
 
+    def test_single_miner_fallback_when_enabled(self):
+        from template.hazard.annotation_eval import PerMinerAnnotationScore
+        from template.hazard.dataset_assembler import DatasetAssembler
+        from template.protocol import PerImageAnnotationItem
+
+        corpus = MagicMock()
+        corpus.is_golden.return_value = False
+        corpus.golden_images.return_value = []
+        corpus.annotation_images.return_value = []
+        corpus.golden_lookup.return_value = None
+
+        assembler = DatasetAssembler(
+            corpus=corpus,
+            storage_prefix="file:///tmp/test",
+            fallback_single_miner=True,
+            fallback_min_reliability=0.05,
+        )
+
+        item = PerImageAnnotationItem(
+            hazard_class="hardhat",
+            bounding_box=[10, 10, 50, 50],
+            confidence=0.9,
+            severity="medium",
+        )
+
+        score = PerMinerAnnotationScore(uid=0)
+        score.fidelity_scores_by_image_id = {"golden1": 0.8}
+
+        result = assembler._aggregate_image(
+            image_id="pool_image_1",
+            image_votes={0: [item]},
+            per_miner_scores={0: score},
+            miner_hotkeys={0: "hotkey_0"},
+            priors={"_background": 0.3, "hardhat": 0.7},
+        )
+        assert result["escalation_required"] is False
+        assert result["chosen_uid"] == 0
+        assert len(result["objects"]) == 1
+        assert result["objects"][0].aggregation_method == "single_miner_fallback_v1"
+
 
 # ===========================================================================
 # Task B: Commercial export image_url validation

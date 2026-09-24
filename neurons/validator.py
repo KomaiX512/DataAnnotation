@@ -64,6 +64,12 @@ class Validator(BaseValidatorNeuron):
             storage_prefix=str(self.config.neuron.flywheel_commercial_dataset_prefix),
             draw_boxes=draw_boxes,
             annotated_prefix=str(annotated_prefix),
+            min_voters=int(getattr(self.config.neuron, "flywheel_min_voters", 2) or 2),
+            min_object_votes=int(getattr(self.config.neuron, "flywheel_min_object_votes", 1) or 1),
+            min_object_support_ratio=float(getattr(self.config.neuron, "flywheel_min_object_support_ratio", 0.50) or 0.50),
+            accept_confidence=float(getattr(self.config.neuron, "flywheel_accept_confidence", 0.20) or 0.20),
+            fallback_single_miner=bool(getattr(self.config.neuron, "flywheel_fallback_single_miner", True)),
+            fallback_min_reliability=float(getattr(self.config.neuron, "flywheel_fallback_min_reliability", 0.05) or 0.05),
         )
         self.reward_composer = DualFlywheelRewardComposer(
             alpha=float(self.config.neuron.flywheel_alpha_annotation),

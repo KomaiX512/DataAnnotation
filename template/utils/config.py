@@ -772,6 +772,42 @@ def add_validator_args(cls, parser):
         default="commercial/annotated-images/",
     )
     parser.add_argument(
+        "--neuron.flywheel_min_voters",
+        type=int,
+        help="Minimum distinct independent voters required to certify commercial consensus without fallback.",
+        default=int(os.getenv("DEFAULT_MIN_VOTERS", "2")),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_min_object_votes",
+        type=int,
+        help="Minimum independent votes agreeing on an object cluster for auto-acceptance.",
+        default=int(os.getenv("DEFAULT_MIN_OBJECT_VOTES", "1")),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_min_object_support_ratio",
+        type=float,
+        help="Minimum ratio of voters supporting an object cluster.",
+        default=float(os.getenv("MIN_OBJECT_SUPPORT_RATIO", "0.50")),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_accept_confidence",
+        type=float,
+        help="Minimum posterior confidence threshold for object cluster acceptance.",
+        default=float(os.getenv("DEFAULT_ACCEPT_CONFIDENCE", "0.20")),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_fallback_single_miner",
+        type=lambda x: str(x).lower() in ("true", "1", "yes"),
+        help="Adopt annotations from high-fidelity top performer when multi-miner consensus quorum is not met.",
+        default=os.getenv("FALLBACK_SINGLE_MINER_ENABLED", "1").strip().lower() in ("1", "true", "yes"),
+    )
+    parser.add_argument(
+        "--neuron.flywheel_fallback_min_reliability",
+        type=float,
+        help="Minimum golden fidelity score required for single-miner fallback adoption.",
+        default=float(os.getenv("FALLBACK_SINGLE_MINER_MIN_RELIABILITY", "0.05")),
+    )
+    parser.add_argument(
         "--neuron.flywheel_min_rewarded_positive_goldens",
         type=int,
         help="Minimum number of positive golden images with verified detections required for reward qualification.",
