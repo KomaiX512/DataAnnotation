@@ -395,9 +395,10 @@ class QwenAnnotationEngine:
                         approx = cv2.approxPolyDP(c, max(1.0, epsilon), True)
                         if len(approx) < 6:
                             approx = cv2.approxPolyDP(c, 0.8, True)
-                        if len(approx) < 5:
-                            continue
                         f_poly = [[round(float(pt[0][0]), 2), round(float(pt[0][1]), 2)] for pt in approx]
+                        if len(f_poly) > 48:
+                            step = len(f_poly) / 48.0
+                            f_poly = [f_poly[int(i * step)] for i in range(48)]
                         area_ratio = c_area / img_area
                         multiplier = CARBON_WEIGHT_MULTIPLIERS.get("field", 0.7)
                         f_weight = round(area_ratio * multiplier, 6)

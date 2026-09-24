@@ -143,6 +143,9 @@ class SelfHostedBackend(BaseModelBackend):
                     x1, y1, x2, y2 = [float(v) for v in bbox]
                     sanitized_poly = polygon
                     if sanitized_poly and len(sanitized_poly) >= 3:
+                        if len(sanitized_poly) > 48:
+                            step = len(sanitized_poly) / 48.0
+                            sanitized_poly = [sanitized_poly[int(i * step)] for i in range(48)]
                         xs = [pt[0] for pt in sanitized_poly]
                         ys = [pt[1] for pt in sanitized_poly]
                         x1 = min(x1, min(xs))

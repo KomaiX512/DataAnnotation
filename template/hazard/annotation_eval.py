@@ -324,6 +324,8 @@ class ConsensusScorer:
                 peer_count=len(peer_lists),
             )
 
+        from template.miner.geometry import canonical_annotation_class
+
         ious: List[float] = []
         peer_classes: List[str] = []
         for peer in peer_lists:
@@ -334,14 +336,14 @@ class ConsensusScorer:
                     iou = iou_xyxy(miner_item.bounding_box, peer_item.bounding_box)
                     if iou > best_iou:
                         best_iou = iou
-                        best_peer_cls = (peer_item.hazard_class or "").lower().strip()
+                        best_peer_cls = canonical_annotation_class(peer_item.hazard_class or "")
             ious.append(best_iou)
             if best_peer_cls:
                 peer_classes.append(best_peer_cls)
 
         mean_iou = sum(ious) / max(1, len(ious))
         miner_classes = [
-            (item.hazard_class or "").lower().strip() for item in miner_items
+            canonical_annotation_class(item.hazard_class or "") for item in miner_items
         ]
         miner_top = miner_classes[0] if miner_classes else ""
         majority = _majority_class(peer_classes)

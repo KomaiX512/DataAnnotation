@@ -93,7 +93,7 @@ class PerImageAnnotationItem(BaseModel):
         if self.polygon is None:
             return self
         x1, y1, x2, y2 = self.bounding_box
-        eps = 1e-2
+        eps = 0.5
         if any(
             x < x1 - eps or y < y1 - eps or x > x2 + eps or y > y2 + eps
             for x, y in self.polygon
