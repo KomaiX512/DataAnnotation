@@ -87,7 +87,8 @@ async def build_camouflaged_annotation_images(
     except Exception:
         pass
 
-    for idx, (image_id, _legacy_url) in enumerate(plan.ordered_images):
+    def _process_single(item):
+        idx, (image_id, _legacy_url) = item
         path = corpus.known_image_path(image_id)
         if path is None or not path.is_file():
             raise FileNotFoundError(
@@ -98,7 +99,6 @@ async def build_camouflaged_annotation_images(
         token = secrets.token_hex(16)
         dest = cache_root / f"{token}.jpg"
         dest.write_bytes(payload)
-        ephemeral_paths.append(dest)
 
         url = None
         if creds is not None:
@@ -106,24 +106,28 @@ async def build_camouflaged_annotation_images(
                 from template.hazard.r2_storage import upload_image_to_r2
                 object_key = f"camouflaged/{token}.jpg"
                 url = upload_image_to_r2(dest, object_key=object_key, creds=creds)
-                bt.logging.debug(f"Uploaded camouflaged task image to R2: {url}")
             except Exception as e:
                 bt.logging.error(f"Failed to upload camouflaged image to R2: {e}")
 
         if not url:
             url = public_url_for_local_path(dest, serving_base_url)
 
-        if mask_image_ids:
-            miner_image_id = token
-        else:
-            miner_image_id = image_id
+        miner_image_id = token if mask_image_ids else image_id
+        return idx, dest, miner_image_id, image_id, url
 
+    from concurrent.futures import ThreadPoolExecutor
+    max_workers = min(32, max(1, len(plan.ordered_images)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        results = list(pool.map(_process_single, enumerate(plan.ordered_images)))
+
+    # Sort back by original index to preserve deterministic order
+    results.sort(key=lambda r: r[0])
+
+    for _, dest, miner_image_id, real_image_id, url in results:
+        ephemeral_paths.append(dest)
         if token_to_real_id is not None:
-            token_to_real_id[miner_image_id] = image_id
-
+            token_to_real_id[miner_image_id] = real_image_id
         out.append(UnlabeledAnnotationImage(image_url=url, image_id=miner_image_id))
-        if jitter_ms_max > 0:
-            await asyncio.sleep(rng.uniform(0.0, jitter_ms_max / 1000.0))
 
     bt.logging.debug(
         f"event=annotation_images_camouflaged step={step} uid={uid} count={len(out)}"

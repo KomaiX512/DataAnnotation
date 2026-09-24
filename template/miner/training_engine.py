@@ -314,15 +314,14 @@ class ModelTrainingAnnotationEngine:
             raise ValueError("annotation_images must be non-empty.")
 
     def _download_images(self, synapse: AnnotationTask) -> Dict[str, Path]:
-        """Download all annotation images to local disk.  Returns id→path mapping."""
+        """Download all annotation images to local disk in parallel. Returns id→path mapping."""
         paths: Dict[str, Path] = {}
 
         all_images = list(synapse.annotation_images)
-        # Also include training pool images
         for tp in synapse.training_pool:
             all_images.append(tp)
 
-        for spec in all_images:
+        def _fetch_one(spec):
             image_id = spec.image_id
             dest = self.image_dir / f"{image_id}.jpg"
             if not dest.exists():
@@ -333,8 +332,17 @@ class ModelTrainingAnnotationEngine:
                     bt.logging.warning(
                         f"Failed to download image {image_id}: {exc}"
                     )
-                    continue
-            paths[image_id] = dest
+                    return None
+            return image_id, dest
+
+        from concurrent.futures import ThreadPoolExecutor
+        max_workers = min(32, max(1, len(all_images)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_fetch_one, all_images))
+
+        for res in results:
+            if res is not None:
+                paths[res[0]] = res[1]
 
         bt.logging.info(
             f"ModelTrainingAnnotationEngine: downloaded {len(paths)} images"
