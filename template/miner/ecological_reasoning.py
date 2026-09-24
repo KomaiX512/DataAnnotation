@@ -98,6 +98,12 @@ class EcologicalVisionEngine:
 
     def _init_segformer(self) -> None:
         """Initialize SOTA SegFormer tree canopy delineation model from Hugging Face / local."""
+        import os
+        if not self.segformer_path or os.getenv("DISABLE_SEGFORMER") == "1":
+            logger.info("SegFormer tree canopy delineation disabled via config/env.")
+            self._segformer_model = None
+            self._segformer_processor = None
+            return
         try:
             from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
             p = Path(self.segformer_path)

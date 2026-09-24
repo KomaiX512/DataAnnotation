@@ -734,14 +734,26 @@ def infer(req: InferRequest):
 
     engine = _engine
 
-    for img_spec in req.images:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_img(img_spec):
         try:
             image_bytes = _load_image_bytes(img_spec.image_url)
             pil_img = Image.open(io.BytesIO(image_bytes))
-
-            # Ensure RGB
             if pil_img.mode != "RGB":
                 pil_img = pil_img.convert("RGB")
+            return img_spec, pil_img
+        except Exception as exc:
+            logger.warning("[infer] failed to load %s: %s", img_spec.image_id, exc)
+            return img_spec, None
+
+    with ThreadPoolExecutor(max_workers=min(16, max(1, len(req.images)))) as ex:
+        loaded_images = list(ex.map(_fetch_img, req.images))
+
+    for img_spec, pil_img in loaded_images:
+        if pil_img is None:
+            continue
+        try:
 
             if engine is not None:
                 anns, metrics = engine.reason_and_annotate(pil_img, image_id=img_spec.image_id)
