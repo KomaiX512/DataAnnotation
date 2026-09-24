@@ -39,11 +39,22 @@ from template.protocol import (
 )
 
 
-def _fetch_url_bytes(url: str, *, timeout: float = 120.0) -> bytes:
-    """Download image bytes from ``http(s)`` or ``file`` URLs."""
+def _fetch_url_bytes(url: str, *, timeout: float = 15.0) -> bytes:
+    """Download image bytes from ``http(s)`` or ``file`` URLs with fast retry."""
+    if url.startswith("file://"):
+        return Path(url[7:]).read_bytes()
     req = Request(url, headers={"User-Agent": "hazard-subnet-miner/2.0"})
-    with urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    last_err = None
+    for _ in range(3):
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except Exception as exc:
+            last_err = exc
+            time.sleep(0.3)
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"Failed to fetch {url}")
 
 
 class ModelTrainingAnnotationEngine:

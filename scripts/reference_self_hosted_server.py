@@ -55,6 +55,11 @@ except ImportError:
     YOLO = None  # type: ignore[assignment,misc]
 
 try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
     from PIL import Image
 except ImportError:
     Image = None  # type: ignore[assignment,misc]
@@ -717,7 +722,11 @@ def infer(req: InferRequest):
     if _engine is None or _engine_checkpoint != checkpoint_path:
         try:
             from template.miner.ecological_reasoning import EcologicalVisionEngine
-            _engine = EcologicalVisionEngine(checkpoint_path=checkpoint_path, qwen_path="", device="cpu")
+            dev = os.getenv("MODEL_SERVER_DEVICE")
+            if not dev:
+                dev = "cuda:0" if (torch is not None and torch.cuda.is_available()) else "cpu"
+            logger.info("[infer] Initializing EcologicalVisionEngine on %s...", dev)
+            _engine = EcologicalVisionEngine(checkpoint_path=checkpoint_path, qwen_path="", device=dev)
             _engine_checkpoint = checkpoint_path
         except Exception as exc:
             logger.warning("[infer] Could not initialize EcologicalVisionEngine: %s", exc)
