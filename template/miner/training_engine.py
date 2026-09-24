@@ -217,6 +217,12 @@ class ModelTrainingAnnotationEngine:
                             img_w, img_h = _im.size
                     except Exception:
                         pass
+                if len(anns) > 512:
+                    anns = sorted(
+                        anns,
+                        key=lambda a: float(getattr(a, "confidence", 1.0) if getattr(a, "confidence", 1.0) is not None else 1.0),
+                        reverse=True,
+                    )[:512]
                 net_weight, coverage_pct, tree_count = compute_image_net_metrics(anns, img_w, img_h)
 
                 records.append(

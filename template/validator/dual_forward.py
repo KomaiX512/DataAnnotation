@@ -147,6 +147,17 @@ def _resolve_target_axon(self, uid: int):
                 f"Resolved local SS58 override uid={uid} hotkey={hk[:16]}... -> target_port={patched.port} target_ip={patched.ip}"
             )
             return patched
+        val_ip = str(getattr(getattr(self, "axon", None), "ip", "") or "")
+        if (val_ip and chain_ip == val_ip and chain_port > 0) or (
+            chain_ip in ("182.176.222.243", "121.52.146.243")
+            and chain_port in (8091, 8092, 8093, 8094, 8095)
+        ):
+            patched = copy.deepcopy(axon)
+            patched.ip = "127.0.0.1"
+            bt.logging.debug(
+                f"Resolved local WAN-loopback uid={uid} hotkey={hk[:16]}... (shared {val_ip}) -> target_port={patched.port} target_ip=127.0.0.1"
+            )
+            return patched
         # For all other miners on live networks, use their on-chain axon directly without rerouting to localhost
         return axon
 

@@ -185,6 +185,12 @@ class SelfHostedBackend(BaseModelBackend):
         for img in inference_images:
             results.setdefault(img.image_id, [])
 
+        # Cap each image's annotations to 512 (protocol max limit) sorted by confidence
+        for img_id, items in results.items():
+            if len(items) > 512:
+                items.sort(key=lambda x: getattr(x, "confidence", 0.0) or 0.0, reverse=True)
+                results[img_id] = items[:512]
+
         return results
 
     # ------------------------------------------------------------------

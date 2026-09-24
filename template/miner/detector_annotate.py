@@ -58,6 +58,13 @@ def annotate_image_detector_only(
                 )
                 annotations.append(ann_item)
 
+    if len(annotations) > 512:
+        annotations = sorted(
+            annotations,
+            key=lambda a: float(getattr(a, "confidence", 1.0) if getattr(a, "confidence", 1.0) is not None else 1.0),
+            reverse=True,
+        )[:512]
+
     from template.miner.geometry import compute_image_net_metrics, canonical_image_name
     img_w, img_h = img.size if hasattr(img, "size") else (1024, 1024)
     net_weight, coverage_pct, tree_count = compute_image_net_metrics(annotations, img_w, img_h)

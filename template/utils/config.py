@@ -772,6 +772,30 @@ def add_validator_args(cls, parser):
         default="commercial/annotated-images/",
     )
     parser.add_argument(
+        "--neuron.flywheel_min_rewarded_positive_goldens",
+        type=int,
+        help="Minimum number of positive golden images with verified detections required for reward qualification.",
+        default=1,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_min_rewarded_golden_iou",
+        type=float,
+        help="Minimum average IoU required per positive golden image for reward qualification.",
+        default=0.0,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_min_rewarded_class_severity",
+        type=float,
+        help="Minimum class severity score required per positive golden image for reward qualification.",
+        default=0.0,
+    )
+    parser.add_argument(
+        "--neuron.flywheel_min_rewarded_golden_fidelity",
+        type=float,
+        help="Minimum fidelity score required per positive golden image for reward qualification.",
+        default=0.01,
+    )
+    parser.add_argument(
         "--wandb.project_name",
         type=str,
         help="The name of the project where you are sending the new run.",

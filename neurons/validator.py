@@ -73,6 +73,18 @@ class Validator(BaseValidatorNeuron):
             golden_missing_penalty=float(
                 getattr(self.config.neuron, "flywheel_golden_missing_penalty", 0.5)
             ),
+            min_rewarded_positive_goldens=int(
+                getattr(self.config.neuron, "flywheel_min_rewarded_positive_goldens", 1)
+            ),
+            min_rewarded_golden_iou=float(
+                getattr(self.config.neuron, "flywheel_min_rewarded_golden_iou", 0.0)
+            ),
+            min_rewarded_class_severity=float(
+                getattr(self.config.neuron, "flywheel_min_rewarded_class_severity", 0.0)
+            ),
+            min_rewarded_golden_fidelity=float(
+                getattr(self.config.neuron, "flywheel_min_rewarded_golden_fidelity", 0.01)
+            ),
         )
 
         self.annotation_scores = np.zeros(self.metagraph.n, dtype=np.float32)
@@ -99,18 +111,29 @@ class Validator(BaseValidatorNeuron):
     def set_weights(self):
         raw_scores = self.scores.copy()
         raw_scores[raw_scores < 1e-4] = 0.0
-        self.scores = broad_softmax_scores(
-            raw_scores,
+        max_score = float(np.max(raw_scores)) if len(raw_scores) > 0 else 0.0
+        if max_score <= 0.0:
+            bt.logging.warning(
+                "No miners have positive incentive scores; skipping set_weights to prevent assigning uniform weights to inactive/offline nodes."
+            )
+            return
+
+        # Scale relative to top performer: active contributors earning >= 5% of the leader
+        # receive their fair proportional share, while dormant/offline nodes (< 5%) receive 0.0.
+        scaled_scores = raw_scores / max_score
+        shaped = broad_softmax_scores(
+            scaled_scores,
             temperature=self.config.neuron.incentive_temperature,
             floor=self.config.neuron.incentive_floor,
             min_score=self.config.neuron.incentive_min_score,
         )
-        if not np.any(self.scores > 0):
+        if not np.any(shaped > 0):
             bt.logging.warning(
-                "No miners have positive incentive scores; skipping set_weights to prevent assigning uniform weights to inactive/offline nodes."
+                "No miners eligible after incentive shaping; skipping set_weights."
             )
-            self.scores = raw_scores
             return
+
+        self.scores = shaped
         try:
             endpoint = str(getattr(self.config.subtensor, "chain_endpoint", ""))
             force_local = os.environ.get("FORCE_LOCAL_SET_WEIGHTS", "").strip().lower() in (
@@ -132,6 +155,7 @@ class Validator(BaseValidatorNeuron):
                 return
             super().set_weights()
         finally:
+            # Preserve continuous EMA ledger so historical tracking is NEVER erased or corrupted
             self.scores = raw_scores
 
     def resync_metagraph(self):

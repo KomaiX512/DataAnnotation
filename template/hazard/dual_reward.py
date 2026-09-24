@@ -54,6 +54,10 @@ class DualFlywheelRewardComposer:
     hallucination_penalty_per_event: float = 0.5
     # Retained for saved configuration compatibility; missing rows are zeros.
     golden_missing_penalty: float = 0.5
+    min_rewarded_positive_goldens: int = _MIN_REWARDED_POSITIVE_GOLDEN_IMAGES
+    min_rewarded_golden_iou: float = _MIN_REWARDED_GOLDEN_IOU
+    min_rewarded_class_severity: float = 1.0
+    min_rewarded_golden_fidelity: float = _MIN_ADOPTION_ANNOTATION_SCORE
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.alpha <= 1.0:
@@ -104,15 +108,15 @@ class DualFlywheelRewardComposer:
                 ]
                 qualifying_positive_count = sum(
                     component.matched_count > 0
-                    and component.iou >= _MIN_REWARDED_GOLDEN_IOU
-                    and component.class_severity >= 1.0
-                    and component.fidelity >= _MIN_ADOPTION_ANNOTATION_SCORE
+                    and component.iou >= self.min_rewarded_golden_iou
+                    and component.class_severity >= self.min_rewarded_class_severity
+                    and component.fidelity >= self.min_rewarded_golden_fidelity
                     for component in positive_components
                 )
                 # True-negative examples can detect hallucinations, but an
                 # empty response cannot earn positive annotation rewards from
-                # them. Require at least three independently localized,
-                # exactly classified positive Golden images in this round.
+                # them. Require independently localized, verified positive
+                # Golden images in this round to qualify.
                 if positive_components:
                     base_annotation = float(
                         sum(component.fidelity for component in positive_components)
@@ -129,7 +133,7 @@ class DualFlywheelRewardComposer:
                     base_annotation *= len(positive_components) / (
                         len(positive_components) + clean_false_positives
                     )
-                if qualifying_positive_count < _MIN_REWARDED_POSITIVE_GOLDEN_IMAGES:
+                if qualifying_positive_count < self.min_rewarded_positive_goldens:
                     base_annotation = 0.0
             elif score is not None:
                 # Compatibility for trusted in-process callers that construct

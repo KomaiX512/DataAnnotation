@@ -514,6 +514,83 @@ def test_three_positive_goldens_need_three_localized_exact_matches_for_reward():
     assert rewards[0] == 0.0
 
 
+def test_operational_positive_golden_gating_rewards_real_models():
+    def component(iou: float, fidelity: float, matched: int, ground_truth: int) -> FidelityComponents:
+        return FidelityComponents(
+            iou=iou,
+            class_severity=1.0 if matched > 0 else 0.0,
+            fidelity=fidelity,
+            hallucination_penalty=1.0,
+            matched_count=matched,
+            hallucinated_count=0,
+            ground_truth_count=ground_truth,
+        )
+
+    # Real model with realistic multi-tree satellite fidelity (~0.09 - 0.20)
+    real_model_score = PerMinerAnnotationScore(
+        uid=1,
+        fidelity_scores_by_image_id={"g1": 0.09, "g2": 0.15, "g3": 0.20},
+        fidelity_components_by_image_id={
+            "g1": component(0.55, 0.09, 2, 4),
+            "g2": component(0.60, 0.15, 3, 5),
+            "g3": component(0.65, 0.20, 3, 4),
+        },
+        localization_iou_mean=0.60,
+    )
+
+    # Empty attacker (0 detections on positive images)
+    empty_attacker_score = PerMinerAnnotationScore(
+        uid=2,
+        fidelity_scores_by_image_id={"g1": 0.0, "g2": 0.0, "g3": 0.0},
+        fidelity_components_by_image_id={
+            "g1": component(0.0, 0.0, 0, 4),
+            "g2": component(0.0, 0.0, 0, 5),
+            "g3": component(0.0, 0.0, 0, 4),
+        },
+        localization_iou_mean=0.0,
+    )
+
+    # Single lucky guesser (1 match on 1 image, nothing on others)
+    lucky_attacker_score = PerMinerAnnotationScore(
+        uid=3,
+        fidelity_scores_by_image_id={"g1": 0.10, "g2": 0.0, "g3": 0.0},
+        fidelity_components_by_image_id={
+            "g1": component(0.52, 0.10, 1, 4),
+            "g2": component(0.0, 0.0, 0, 5),
+            "g3": component(0.0, 0.0, 0, 4),
+        },
+        localization_iou_mean=0.17,
+    )
+
+    operational_composer = DualFlywheelRewardComposer(
+        alpha=0.7,
+        min_rewarded_positive_goldens=2,
+        min_rewarded_golden_iou=0.0,
+        min_rewarded_class_severity=0.0,
+        min_rewarded_golden_fidelity=0.01,
+    )
+
+    rewards, breakdowns = operational_composer.compose(
+        uids=[1, 2, 3],
+        annotation_scores={1: real_model_score, 2: empty_attacker_score, 3: lucky_attacker_score},
+        ledger=AdoptionLedger(),
+        round_winners=[],
+    )
+
+    # Real model gets positive, fair reward: 0.7 * mean(0.09, 0.15, 0.20) = 0.7 * 0.14666 = ~0.1026
+    assert rewards[0] > 0.08
+    assert breakdowns[0].annotation_score > 0.10
+
+    # Empty attacker gets strictly 0.0
+    assert rewards[1] == 0.0
+    assert breakdowns[1].annotation_score == 0.0
+
+    # Lucky single-guess attacker gets strictly 0.0 (requires >= 2 positive verified images)
+    assert rewards[2] == 0.0
+    assert breakdowns[2].annotation_score == 0.0
+
+
+
 def test_evaluate_round_annotations_aggregates_correctly(tmp_path):
     corpus = _build_synthetic_corpus(tmp_path)
     g1 = corpus.golden_images()[0]
