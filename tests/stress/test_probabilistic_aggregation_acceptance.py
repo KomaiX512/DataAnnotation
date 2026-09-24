@@ -347,8 +347,9 @@ def test_miner_area_and_weight_cannot_poison_exported_geometry_metrics(tmp_path:
     assert not winner.escalation_required, winner.escalation_reason
     obj = winner.accepted_objects[0]
     assert obj.area == pytest.approx(3600.0)
+    assert obj.fused_polygon is not None and len(obj.fused_polygon) >= 3
+    assert obj.fused_bounding_box == pytest.approx(box)
     assert obj.weight == pytest.approx(3600.0 / (pool.width * pool.height))
-    assert obj.fused_polygon is None
     assert winner.net_weight == pytest.approx(3600.0 / (pool.width * pool.height))
     assert winner.tree_coverage_ratio == pytest.approx(3600.0 / (pool.width * pool.height))
 

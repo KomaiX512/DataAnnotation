@@ -141,20 +141,11 @@ class SelfHostedBackend(BaseModelBackend):
             if image_id and hazard_class and len(bbox) == 4:
                 try:
                     x1, y1, x2, y2 = [float(v) for v in bbox]
-                    sanitized_poly = polygon
-                    if sanitized_poly and len(sanitized_poly) >= 3:
-                        if len(sanitized_poly) > 48:
-                            step = len(sanitized_poly) / 48.0
-                            sanitized_poly = [sanitized_poly[int(i * step)] for i in range(48)]
-                        xs = [pt[0] for pt in sanitized_poly]
-                        ys = [pt[1] for pt in sanitized_poly]
-                        x1 = min(x1, min(xs))
-                        y1 = min(y1, min(ys))
-                        x2 = max(x2, max(xs))
-                        y2 = max(y2, max(ys))
-                    else:
-                        sanitized_poly = None
+                    from template.miner.geometry import sanitize_and_refine_polygon
 
+                    sanitized_poly = sanitize_and_refine_polygon(
+                        polygon, [x1, y1, x2, y2], hazard_class=hazard_class
+                    )
                     item = PerImageAnnotationItem(
                         hazard_class=hazard_class,
                         bounding_box=[x1, y1, x2, y2],
@@ -165,21 +156,9 @@ class SelfHostedBackend(BaseModelBackend):
                     )
                     results.setdefault(image_id, []).append(item)
                 except Exception as val_err:
-                    # Fallback to bounding box without polygon if contour validation fails
-                    try:
-                        item = PerImageAnnotationItem(
-                            hazard_class=hazard_class,
-                            bounding_box=[float(v) for v in bbox],
-                            polygon=None,
-                            area=float(area) if area is not None else None,
-                            weight=float(weight) if weight is not None else None,
-                            confidence=float(conf) if conf is not None else None,
-                        )
-                        results.setdefault(image_id, []).append(item)
-                    except Exception as fallback_err:
-                        bt.logging.warning(
-                            f"Dropping invalid annotation item for {image_id}: {val_err} / {fallback_err}"
-                        )
+                    bt.logging.warning(
+                        f"Dropping invalid annotation item for {image_id}: {val_err}"
+                    )
 
         # Ensure all requested image_ids have an entry (even if empty)
         for img in inference_images:

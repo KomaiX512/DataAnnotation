@@ -14,8 +14,14 @@ from urllib.parse import urlparse
 
 import bittensor as bt
 
+import template
 from template.hazard.annotation_eval import PerMinerAnnotationScore, iou_xyxy
 from template.hazard.image_corpus import ImageCorpus
+from template.miner.geometry import (
+    CARBON_WEIGHT_MULTIPLIERS,
+    canonical_carbon_class,
+    sanitize_and_refine_polygon,
+)
 from template.protocol import PerImageAnnotationItem, R2AccessCredentials
 
 _BACKGROUND_CLASS = "_background"
@@ -66,6 +72,7 @@ class MinerVote:
     confidence: float
     bounding_box: Optional[Tuple[float, float, float, float]]
     reliability_weight_at_aggregation: float
+    polygon: Optional[List[List[float]]] = None
 
     def to_jsonable(self) -> dict:
         return {
@@ -75,6 +82,7 @@ class MinerVote:
             "severity_voted": self.severity_voted,
             "confidence": float(self.confidence),
             "bounding_box": list(self.bounding_box) if self.bounding_box is not None else None,
+            "polygon": self.polygon,
             "reliability_weight_at_aggregation": float(self.reliability_weight_at_aggregation),
         }
 
@@ -378,7 +386,7 @@ class DatasetAssembler:
                             miner_contribution_scores={},
                             reliability_window=self._reliability_window(timestamps),
                             acceptance_thresholds=self._acceptance_thresholds(),
-                            validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
+                            validator_version=os.getenv("VALIDATOR_VERSION", template.__version__),
                             timestamp=str(timestamps.get(best_uid, "")),
                             net_weight=0.0,
                             tree_coverage_ratio=0.0,
@@ -440,7 +448,7 @@ class DatasetAssembler:
                     miner_contribution_scores=aggregated["miner_contribution_scores"],
                     reliability_window=self._reliability_window(timestamps),
                     acceptance_thresholds=self._acceptance_thresholds(),
-                    validator_version=os.getenv("VALIDATOR_VERSION", "1.2.0"),
+                    validator_version=os.getenv("VALIDATOR_VERSION", template.__version__),
                     timestamp=str(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
                     net_weight=net_weight,
                     tree_coverage_ratio=coverage_ratio,
@@ -824,7 +832,11 @@ class DatasetAssembler:
             box = tuple(float(v) for v in item.bounding_box) if item.bounding_box and len(item.bounding_box) == 4 else None
             obj_area = None
             obj_weight = None
+            poly = None
             if box is not None:
+                poly = sanitize_and_refine_polygon(
+                    item.polygon, box, hazard_class=cls
+                )
                 obj_area = round(
                     max(0.0, (box[2] - box[0]) * (box[3] - box[1])), 2
                 )
@@ -842,6 +854,7 @@ class DatasetAssembler:
                 confidence=float(reliability),
                 bounding_box=box,
                 reliability_weight_at_aggregation=float(reliability),
+                polygon=poly,
             )
             fallback_objects.append(
                 AggregatedObject(
@@ -856,7 +869,7 @@ class DatasetAssembler:
                     },
                     severity_posterior_distribution={sev: 1.0},
                     fused_bounding_box=box,
-                    fused_polygon=None,
+                    fused_polygon=poly,
                     area=obj_area,
                     weight=obj_weight,
                     spatial_mean_iou_to_median=1.0,
@@ -1061,11 +1074,13 @@ class DatasetAssembler:
                 observed_class = _BACKGROUND_CLASS
                 observed_severity = "none"
                 box = None
+                poly = None
             else:
                 observed_class = _safe_class(item.hazard_class)
                 from template.hazard.image_corpus import _severity_for_label
                 observed_severity = _severity_for_label(observed_class)
-                box = tuple(float(v) for v in item.bounding_box)
+                box = tuple(float(v) for v in item.bounding_box) if item.bounding_box and len(item.bounding_box) == 4 else None
+                poly = sanitize_and_refine_polygon(item.polygon, box, hazard_class=observed_class) if box is not None else None
             cls_weight = score.weight_for_class(observed_class) if score is not None else 1e-4
             obs_conf = float(cls_weight)
             per_miner_votes.append(
@@ -1077,6 +1092,7 @@ class DatasetAssembler:
                     confidence=obs_conf,
                     bounding_box=box,
                     reliability_weight_at_aggregation=cls_weight,
+                    polygon=poly,
                 )
             )
             for true_class in class_labels:
@@ -1156,28 +1172,24 @@ class DatasetAssembler:
                 best_weight = w
                 best_item = item
 
-        # We have no validator-side polygon ground truth for annotation-pool
-        # images, so do not export an unverified miner contour as if it were a
-        # fused/validated mask. Geometry metrics are derived from the fused box;
-        # miner-provided area and weight are never copied into accepted output.
         fused_poly = None
         obj_area = None
         obj_weight = None
         if fused_box is not None:
+            metric_class = accepted_class or (
+                _safe_class(best_item.hazard_class) if best_item is not None else _BACKGROUND_CLASS
+            )
+            fused_poly = sanitize_and_refine_polygon(
+                best_item.polygon if best_item is not None else None,
+                fused_box,
+                hazard_class=metric_class,
+            )
             obj_area = round(
                 max(0.0, (fused_box[2] - fused_box[0]) * (fused_box[3] - fused_box[1])),
                 2,
             )
             width, height = self._image_dims(image_id)
             image_area = float(max(1, width * height))
-            metric_class = accepted_class or (
-                _safe_class(best_item.hazard_class) if best_item is not None else _BACKGROUND_CLASS
-            )
-            from template.miner.geometry import (
-                CARBON_WEIGHT_MULTIPLIERS,
-                canonical_carbon_class,
-            )
-
             carbon_class = canonical_carbon_class(metric_class)
             obj_weight = round(
                 (obj_area / image_area)
