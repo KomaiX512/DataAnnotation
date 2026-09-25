@@ -180,7 +180,10 @@ def main():
             if (x2 - x1) < 4 or (y2 - y1) < 4:
                 continue
 
-            area = float(ann.get("area", (x2 - x1) * (y2 - y1)))
+            # Fix crowd zero-area bug: in COCO annotations, iscrowd regions often have area=0
+            raw_area = float(ann.get("area") or 0.0)
+            box_area = float((x2 - x1) * (y2 - y1))
+            area = raw_area if raw_area > 0.0 else box_area
             eco_class = infer_eco_class_from_biome(biome, area)
 
             # Extract fine-grained polygon contour
