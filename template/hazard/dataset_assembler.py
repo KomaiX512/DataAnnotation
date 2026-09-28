@@ -9,7 +9,7 @@ import os
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 from urllib.parse import urlparse
 
 import bittensor as bt
@@ -25,6 +25,16 @@ from template.miner.geometry import (
 from template.protocol import PerImageAnnotationItem, R2AccessCredentials
 
 _BACKGROUND_CLASS = "_background"
+
+
+class _SelectedRecordLike(Protocol):
+    image_id: str
+    source_uid: int
+    annotations: Sequence[PerImageAnnotationItem]
+    model_version: str
+    policy_accepted: bool
+    requires_escalation: bool
+    escalation_reason: Optional[str]
 
 
 def _read_unit_interval_env(name: str, default: str) -> float:
@@ -154,6 +164,8 @@ class WinningAnnotation:
     # Set only by a separate validator/human ground-truth audit. Peer consensus
     # on an unlabeled image is not sufficient evidence for paid adoption.
     ground_truth_verified: bool = False
+    source_model_version: Optional[str] = None
+    selection_accepted: bool = False
 
     def to_jsonable(self) -> dict:
         payload = {
@@ -171,6 +183,8 @@ class WinningAnnotation:
             "height": int(self.height),
             "is_golden": bool(self.is_golden),
             "ground_truth_verified": bool(self.ground_truth_verified),
+            "selection_accepted": bool(self.selection_accepted),
+            "source_model_version": self.source_model_version,
             "aggregation_method": self.aggregation_method,
             "reliability_window": self.reliability_window,
             "acceptance_thresholds": self.acceptance_thresholds,
@@ -465,12 +479,230 @@ class DatasetAssembler:
         )
         return winners
 
+    def assemble_selected_records(
+        self,
+        *,
+        selected_by_image: Mapping[str, _SelectedRecordLike],
+        miner_hotkeys: Mapping[int, str],
+        fidelity_by_uid: Mapping[int, float],
+        timestamps: Mapping[int, str],
+    ) -> List[WinningAnnotation]:
+        """Convert one already-selected complete miner record per image to export rows.
+
+        This path performs no consensus, fusion, fallback, or ground-truth
+        verification. ``selected_by_image`` values are typed adapter results
+        and their annotation tuples are the immutable submitted records.
+        """
+        from template.hazard.image_corpus import _severity_for_label
+        from template.miner.geometry import canonical_image_name
+
+        winners: list[WinningAnnotation] = []
+        for image_id, selected in sorted(selected_by_image.items()):
+            if not isinstance(image_id, str) or not image_id:
+                raise ValueError("Selected image IDs must be non-empty strings.")
+            if selected.image_id != image_id:
+                raise ValueError("Selected record image identity does not match its task slot.")
+            uid = int(selected.source_uid)
+            if uid not in miner_hotkeys or uid not in fidelity_by_uid:
+                raise ValueError("Selected record references a miner outside the scored task.")
+            width, height = self._image_dims(image_id)
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Selected image {image_id!r} has invalid dimensions.")
+            image_url = self._image_url(image_id)
+            image_name = canonical_image_name(image_id, image_url)
+            try:
+                score = float(fidelity_by_uid[uid])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"Selected image {image_id!r} has invalid miner fidelity.") from exc
+            if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+                raise ValueError(f"Selected image {image_id!r} has invalid miner fidelity.")
+            policy_accepted = bool(getattr(selected, "policy_accepted", False))
+            escalation_reasons: set[str] = set()
+            if not policy_accepted:
+                escalation_reasons.add("selection_policy_not_accepted")
+            if bool(getattr(selected, "requires_escalation", False)):
+                reported_reason = getattr(selected, "escalation_reason", None)
+                escalation_reasons.update(
+                    item for item in str(reported_reason or "selection_requires_review").split(",")
+                    if item
+                )
+            objects: list[AggregatedObject] = []
+            coverage_boxes: list[tuple[float, float, float, float]] = []
+            seen_records: set[tuple[object, ...]] = set()
+            total_weight = 0.0
+            for index, item in enumerate(selected.annotations):
+                hazard_class = str(item.hazard_class)
+                if not hazard_class.strip():
+                    raise ValueError(
+                        f"Selected image {image_id!r} contains an invalid class label."
+                    )
+                severity = _severity_for_label(hazard_class)
+                box = tuple(float(value) for value in item.bounding_box)
+                if (
+                    len(box) != 4
+                    or not all(math.isfinite(value) for value in box)
+                    or box[2] <= box[0]
+                    or box[3] <= box[1]
+                    or box[0] < 0
+                    or box[1] < 0
+                    or box[2] > width
+                    or box[3] > height
+                ):
+                    raise ValueError(
+                        f"Selected image {image_id!r} contains invalid annotation geometry."
+                    )
+                if box == (0.0, 0.0, float(width), float(height)):
+                    escalation_reasons.add("full_frame_box_requires_review")
+                polygon_points: list[tuple[float, float]] = []
+                if item.polygon is not None and len(item.polygon) < 3:
+                    raise ValueError(
+                        f"Selected image {image_id!r} contains malformed polygon geometry."
+                    )
+                for point in item.polygon or ():
+                    try:
+                        if len(point) != 2:
+                            raise ValueError
+                        px, py = float(point[0]), float(point[1])
+                    except (TypeError, ValueError, OverflowError, IndexError) as exc:
+                        raise ValueError(
+                            f"Selected image {image_id!r} contains malformed polygon geometry."
+                        ) from exc
+                    if (
+                        not math.isfinite(px)
+                        or not math.isfinite(py)
+                        or px < 0
+                        or py < 0
+                        or px > width
+                        or py > height
+                        or px < box[0] - 0.5
+                        or py < box[1] - 0.5
+                        or px > box[2] + 0.5
+                        or py > box[3] + 0.5
+                    ):
+                        raise ValueError(
+                            f"Selected image {image_id!r} contains invalid polygon geometry."
+                        )
+                    polygon_points.append((px, py))
+                polygon_signature = tuple(polygon_points)
+                signature = (hazard_class, box, polygon_signature)
+                if signature in seen_records:
+                    escalation_reasons.add("duplicate_annotation_requires_review")
+                seen_records.add(signature)
+                box_area = max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+                try:
+                    area = float(item.area if item.area is not None else box_area)
+                    confidence = float(item.confidence if item.confidence is not None else 0.0)
+                    weight = float(
+                        item.weight
+                        if item.weight is not None
+                        else area / max(1, width * height)
+                    )
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        f"Selected image {image_id!r} contains invalid annotation metadata."
+                    ) from exc
+                if (
+                    not math.isfinite(area)
+                    or area < 0.0
+                    or not math.isfinite(confidence)
+                    or not 0.0 <= confidence <= 1.0
+                    or not math.isfinite(weight)
+                    or weight < 0.0
+                ):
+                    raise ValueError(
+                        f"Selected image {image_id!r} contains invalid annotation metadata."
+                    )
+                polygon = (
+                    [[x, y] for x, y in polygon_points]
+                    if item.polygon is not None else None
+                )
+                reliability_weight = float(max(0.0, min(1.0, fidelity_by_uid.get(uid, 0.0))))
+                vote = MinerVote(
+                    miner_uid=uid,
+                    miner_hotkey=str(miner_hotkeys.get(uid, "")),
+                    class_voted=hazard_class,
+                    severity_voted=severity,
+                    confidence=confidence,
+                    bounding_box=box,
+                    reliability_weight_at_aggregation=reliability_weight,
+                    polygon=polygon,
+                )
+                cluster_id = hashlib.sha256(
+                    f"{image_id}:{uid}:{index}".encode("utf-8")
+                ).hexdigest()[:16]
+                objects.append(AggregatedObject(
+                    object_cluster_id=cluster_id,
+                    accepted_hazard_class=hazard_class,
+                    accepted_severity=severity,
+                    confidence=confidence,
+                    severity_confidence=1.0,
+                    class_posterior_distribution={hazard_class: 1.0},
+                    severity_posterior_distribution={severity: 1.0},
+                    fused_bounding_box=box,
+                    spatial_mean_iou_to_median=1.0,
+                    miner_votes=(vote,),
+                    escalation_reason=None,
+                    aggregation_method="vision_model_selection_v1",
+                    fused_polygon=polygon,
+                    area=area,
+                    weight=weight,
+                ))
+                if hazard_class != _BACKGROUND_CLASS:
+                    coverage_boxes.append(box)
+                    total_weight += (area / max(1, width * height)) * CARBON_WEIGHT_MULTIPLIERS.get(
+                        canonical_carbon_class(hazard_class), 1.0
+                    )
+
+            tree_area = _rectangle_union_area(coverage_boxes)
+            image_area = float(max(1, width * height))
+            coverage_ratio = min(1.0, max(0.0, tree_area / image_area))
+            now = str(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            winners.append(WinningAnnotation(
+                image_id=image_id,
+                image_name=image_name,
+                score=score,
+                chosen_uid=uid,
+                is_golden=False,
+                aggregation_method="vision_model_selection_v1",
+                image_url=image_url,
+                width=int(width),
+                height=int(height),
+                escalation_required=bool(escalation_reasons),
+                escalation_reason=(
+                    ",".join(sorted(escalation_reasons)) if escalation_reasons else None
+                ),
+                accepted_objects=tuple(objects),
+                miner_contribution_scores=(
+                    {uid: 1.0}
+                    if policy_accepted and not escalation_reasons else {}
+                ),
+                reliability_window=self._reliability_window(timestamps),
+                acceptance_thresholds=self._acceptance_thresholds(),
+                validator_version=os.getenv("VALIDATOR_VERSION", template.__version__),
+                timestamp=now,
+                source_model_version=str(selected.model_version),
+                net_weight=round(total_weight, 6),
+                tree_coverage_ratio=coverage_ratio,
+                tree_coverage_percentage=round(coverage_ratio * 100.0, 2),
+                tree_count=sum(
+                    obj.accepted_hazard_class != _BACKGROUND_CLASS for obj in objects
+                ),
+                ground_truth_verified=False,
+                selection_accepted=policy_accepted and not escalation_reasons,
+            ))
+
+        # Model-selected public rows are not human adoption ledger entries.
+        self.ledger.record_round(winners)
+        return winners
+
     def export(
         self,
         winners: Sequence[WinningAnnotation],
         *,
         round_id: str,
         commercial_r2_credentials: Optional[R2AccessCredentials] = None,
+        dataset_name: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> str:
         """Append the round's winners to the commercial dataset and return its URI.
 
@@ -498,13 +730,17 @@ class DatasetAssembler:
             return ""
 
         # --- Upload images and rewrite image_url to public HTTP(S) ---
-        creds = commercial_r2_credentials
-        if creds is None:
-            try:
-                from template.hazard.r2_storage import load_r2_credentials_from_env
-                creds = load_r2_credentials_from_env()
-            except RuntimeError:
-                creds = None
+        parsed = urlparse(self.storage_prefix or "")
+        local_only_export = parsed.scheme == "file"
+        creds = None
+        if not local_only_export:
+            creds = commercial_r2_credentials
+            if creds is None:
+                try:
+                    from template.hazard.r2_storage import load_r2_credentials_from_env
+                    creds = load_r2_credentials_from_env()
+                except RuntimeError:
+                    creds = None
 
         rewritten: List[dict] = []
         for w in commercial:
@@ -524,6 +760,8 @@ class DatasetAssembler:
                     image_id=w.image_id,
                     round_id=round_id,
                     creds=creds,
+                    dataset_name=dataset_name,
+                    batch_id=batch_id,
                 )
                 if public_url:
                     row_image_url = public_url
@@ -536,7 +774,10 @@ class DatasetAssembler:
                     # 1. Local copy if local storage prefix (file://) is active
                     parsed_prefix = urlparse(self.storage_prefix or "")
                     if parsed_prefix.scheme == "file":
-                        local_annotated_dir = Path(parsed_prefix.path) / self.annotated_prefix
+                        if dataset_name and batch_id:
+                            local_annotated_dir = Path(parsed_prefix.path) / dataset_name / batch_id / "annotated-images"
+                        else:
+                            local_annotated_dir = Path(parsed_prefix.path) / self.annotated_prefix
                         local_annotated_dir.mkdir(parents=True, exist_ok=True)
                         local_annotated_path = local_annotated_dir / f"{w.image_id}{image_path.suffix}"
                         import shutil
@@ -547,20 +788,29 @@ class DatasetAssembler:
                     if creds is not None:
                         try:
                             from template.hazard.r2_storage import upload_image_to_r2
-                            object_key = f"{self.annotated_prefix}{w.image_id}{image_path.suffix}"
+                            if dataset_name and batch_id:
+                                object_key = f"{dataset_name}/{batch_id}/annotated-images/{w.image_id}{image_path.suffix}"
+                            else:
+                                object_key = f"{self.annotated_prefix}{w.image_id}{image_path.suffix}"
                             r2_url = upload_image_to_r2(
                                 temp_annotated, object_key=object_key, creds=creds
                             )
                             if r2_url:
                                 row_annotated_image_url = r2_url
                         except Exception as e:
-                            bt.logging.error(f"Failed to upload annotated image to R2: {e}")
+                            bt.logging.error(
+                                "event=annotated_image_upload_failure error_type=%s"
+                                % type(e).__name__
+                            )
 
                     # Cleanup temporary file
                     if temp_annotated.exists():
                         temp_annotated.unlink()
                 except Exception as e:
-                    bt.logging.error(f"Error drawing annotations on image {w.image_id}: {e}")
+                    bt.logging.error(
+                        "event=annotation_render_failure image_id=%s error_type=%s"
+                        % (w.image_id[:16], type(e).__name__)
+                    )
 
             w_updated = replace(
                 w,
@@ -574,18 +824,12 @@ class DatasetAssembler:
         )
         body = (payload_lines + "\n").encode("utf-8")
 
-        parsed = urlparse(self.storage_prefix or "")
         if parsed.scheme == "file":
-            local_uri = self._export_local(body, parsed, round_id)
-            if creds is not None:
-                try:
-                    self._export_r2_mirror(body, round_id, creds)
-                except Exception as exc:
-                    bt.logging.warning(
-                        "event=r2_commercial_export_mirror_error round=%s error=%s",
-                        round_id, exc,
-                    )
-            return local_uri
+            # A local destination is strictly local even when operator R2
+            # credentials are injected for read-only dataset access.
+            return self._export_local(
+                body, parsed, round_id, dataset_name=dataset_name, batch_id=batch_id
+            )
         if parsed.scheme in ("r2", "s3"):
             if creds is None:
                 raise ValueError(
@@ -593,7 +837,7 @@ class DatasetAssembler:
                     f"{parsed.scheme}:// storage."
                 )
             return self._export_object_storage(
-                body, parsed, round_id, creds
+                body, parsed, round_id, creds, dataset_name=dataset_name, batch_id=batch_id
             )
         raise ValueError(
             f"Unsupported commercial dataset storage scheme: {self.storage_prefix!r}"
@@ -713,13 +957,14 @@ class DatasetAssembler:
         image_id: str,
         round_id: str,
         creds: R2AccessCredentials,
+        dataset_name: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> str:
         """Upload a single image to R2 for inclusion in the commercial dataset.
 
         Returns a public HTTP(S) URL, or empty string if the image can't be found.
-        Images are uploaded under ``commercial/images/<image_id>.<ext>`` and are
-        idempotent — re-uploading the same image_id is a no-op at the R2 level
-        (same key overwrites with identical content).
+        Images are uploaded under ``{dataset_name}/{batch_id}/images/<image_id>.<ext>``
+        (or ``commercial/images/<image_id>.<ext>``) and are idempotent.
         """
         image_path = self.corpus.known_image_path(image_id)
         if image_path is None or not image_path.exists():
@@ -731,19 +976,23 @@ class DatasetAssembler:
         try:
             from template.hazard.r2_storage import upload_image_to_r2
 
-            object_key = f"commercial/images/{image_id}{image_path.suffix}"
+            if dataset_name and batch_id:
+                object_key = f"{dataset_name}/{batch_id}/images/{image_id}{image_path.suffix}"
+            else:
+                object_key = f"commercial/images/{image_id}{image_path.suffix}"
             url = upload_image_to_r2(
                 image_path, object_key=object_key, creds=creds
             )
             bt.logging.debug(
-                "event=commercial_image_uploaded image_id=%s url=%s",
-                image_id[:16], url[:80],
+                "event=commercial_image_uploaded image_id=%s key=%s",
+                image_id[:16],
+                object_key,
             )
             return url
         except Exception as exc:
             bt.logging.warning(
-                "event=commercial_image_upload_error image_id=%s error=%s",
-                image_id[:16], exc,
+                "event=commercial_image_upload_error image_id=%s error_type=%s",
+                image_id[:16], type(exc).__name__,
             )
             return ""
 
@@ -1295,12 +1544,30 @@ class DatasetAssembler:
         local = self.corpus.known_image_path(image_id)
         return local.as_uri() if local is not None else ""
 
-    def _export_local(self, body: bytes, parsed, round_id: str) -> str:
-        directory = Path(parsed.path)
+    def _export_local(
+        self,
+        body: bytes,
+        parsed,
+        round_id: str,
+        dataset_name: Optional[str] = None,
+        batch_id: Optional[str] = None,
+    ) -> str:
+        base_dir = Path(parsed.path)
+        if dataset_name and batch_id:
+            directory = base_dir / dataset_name / batch_id
+        else:
+            directory = base_dir
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"commercial-dataset-{round_id}.jsonl"
         target.write_bytes(body)
-        master = directory / "commercial-dataset.jsonl"
+        if dataset_name and batch_id:
+            annotations_json = directory / "annotations.json"
+            try:
+                records = [json.loads(line) for line in body.decode("utf-8").strip().split("\n") if line.strip()]
+                annotations_json.write_text(json.dumps(records, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        master = base_dir / "commercial-dataset.jsonl"
         with master.open("ab") as handle:
             handle.write(body)
         bt.logging.info(
@@ -1315,6 +1582,8 @@ class DatasetAssembler:
         parsed,
         round_id: str,
         creds: R2AccessCredentials,
+        dataset_name: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ) -> str:
         try:
             import boto3
@@ -1326,7 +1595,12 @@ class DatasetAssembler:
             raise ValueError(f"Storage prefix missing bucket: {self.storage_prefix}")
         if prefix and not prefix.endswith("/"):
             prefix = prefix + "/"
-        object_key = f"{prefix}commercial-dataset-{round_id}.jsonl"
+        if dataset_name and batch_id:
+            object_key = f"{prefix}{dataset_name}/{batch_id}/annotations.json"
+            jsonl_key = f"{prefix}{dataset_name}/{batch_id}/commercial-dataset-{round_id}.jsonl"
+        else:
+            object_key = f"{prefix}commercial-dataset-{round_id}.jsonl"
+            jsonl_key = None
         client = boto3.client(
             "s3",
             endpoint_url=creds.s3_endpoint,
@@ -1334,12 +1608,36 @@ class DatasetAssembler:
             aws_secret_access_key=creds.secret_access_key,
             region_name="auto",
         )
-        client.put_object(
-            Bucket=bucket,
-            Key=object_key,
-            Body=body,
-            ContentType="application/x-ndjson",
-        )
+        if jsonl_key:
+            client.put_object(
+                Bucket=bucket,
+                Key=jsonl_key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
+            try:
+                records = [json.loads(line) for line in body.decode("utf-8").strip().split("\n") if line.strip()]
+                json_bytes = json.dumps(records, indent=2).encode("utf-8")
+                client.put_object(
+                    Bucket=bucket,
+                    Key=object_key,
+                    Body=json_bytes,
+                    ContentType="application/json",
+                )
+            except Exception:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=object_key,
+                    Body=body,
+                    ContentType="application/x-ndjson",
+                )
+        else:
+            client.put_object(
+                Bucket=bucket,
+                Key=object_key,
+                Body=body,
+                ContentType="application/x-ndjson",
+            )
         uri = f"{parsed.scheme}://{bucket}/{object_key}"
         bt.logging.info(
             f"event=dataset_export_remote round={round_id} uri={uri} bytes={len(body)}"

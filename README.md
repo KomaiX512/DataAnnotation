@@ -1,55 +1,54 @@
-# Decentralized Data Annotation Subnet
-A Bittensor subnet where miners compete to annotate images with bounding boxes and hazard classes, and validators assemble the most accurate labels into a commercial dataset. The design is model-agnostic: any vision model can be used for labeling as long as it produces the required outputs.
+# Decentralized Data Annotation Subnet (v1.5.0)
 
-## How It Works
+The DataAnnotation subnet produces verified, high-precision carbon and forestry ecological annotations for Climate MRV (Monitoring, Reporting, and Verification).
 
-```text
-+------------------+                   +--------------------+
-|                  |   Hidden Golden   |                    |
-|    Validator     |------------------>|       Miners       |
-|                  |       Set         |                    |
-+------------------+                   +--------------------+
-         ^                                       |
-         | Downloads                             | Uploads
-         | Fused Consensus                       | Annotations
-         v                                       v
-+------------------+                   +--------------------+
-|  Commercial      |                   |    Cloudflare R2   |
-|  JSONL Export    |<------------------|   Object Storage   |
-+------------------+                   +--------------------+
+Miners run high-accuracy computer vision segmentation models to delineate individual tree canopies, dense vegetation clusters, and mangrove forests from high-resolution aerial and satellite tiles. Validators score submissions against hidden labeled golden samples and adjudicate public imagery using multimodal visual reasoning models.
+
+---
+
+## What's New in Version 1.5.0
+
+- **High-Precision Multi-Vertex Polygons**: Transitioned from crude bounding boxes to organic polygon crown contours (`polygon: [[x, y], ...]`). High-precision polygon delineations receive priority scoring from multimodal vision judges.
+- **Round-by-Round Dataset Partitioning**: Datasets are segmented into deterministic batches (`batch_1`, `batch_2`, etc.) matching network rounds.
+- **Mid-Round Arrival Synchronization**: Dynamic synchronization protocol ensuring miners registering mid-round cleanly await the next round before competing.
+- **Strict Batch Verification & Anti-Cheat**: Out-of-sync batch injection protection, opaque per-hotkey token mapping, and quadratic polygon complexity bounds.
+- **Cloudflare R2 Direct Artifact Pipeline**: Scalable, high-throughput payload retrieval pipeline via Cloudflare R2 object storage.
+- **Hardened Validator Security**: Proprietary validator adjudicator and selection pipelines protected via authenticated in-memory runtime execution.
+
+---
+
+## Documentation Links
+
+- **[Miner Documentation (v1.5.0)](MINER.md)**: Setup guide, high-precision polygon requirements, R2 payload format, and batch sync specifications.
+- **[Validator Architecture](VALIDATOR.md)**: Epoch task scheduling, golden sample injection, and consensus adjudication.
+- **[System Architecture](docs/ARCHITECTURE.md)**: Deep dive into the dual flywheel, incentive mechanisms, and security bounds.
+
+---
+
+## Quickstart
+
+### Clone & Install
+```bash
+git clone https://github.com/KomaiX512/DataAnnotation.git
+cd DataAnnotation
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-1. **Validator** holds a secret Golden Set of human-verified labels.
-2. **Miners** download unlabeled images, run their own models, and upload annotations to Cloudflare R2.
-3. **Validator** scores miners on the Golden Set (hidden from miners), fuses the best annotations, and pays miners based on accuracy and consensus contribution.
-4. A **commercial JSONL dataset** is exported containing only high-confidence, non-Golden annotations.
-
-## Incentive Mechanism
-
-Miners earn rewards based on two things:
-
-* **Annotation Fidelity**: How well they label the hidden Golden Set images (IoU + class match).
-* **Adoption Bonus**: How often their annotations are selected for the final fused dataset.
-
-**Reward formula**: `Reward = alpha * Fidelity + (1-alpha) * Adoption_Bonus`
-
-Validators set on-chain weights proportionally; honest, high-quality miners earn the most TAO.
-
-## Quick Links
-
-* 📖 [Miner Guide](MINER.md)
-* 🔍 [Validator Guide](VALIDATOR.md)
-* 📊 [Subnet Architecture](docs/ARCHITECTURE.md)
-
-## Quick Start (3 steps)
+### Running a Miner
+Consult [MINER.md](MINER.md) for full miner setup instructions.
 
 ```bash
-git clone https://github.com/Tech-Nucleus/DataAnnotation.git bittensor-subnet-template-1 && cd bittensor-subnet-template-1
-pip install -r requirements.txt
-cp .env.testnet.example .env   # pre-filled for testnet (netuid 498) — edit wallet name only
+python neurons/miner.py \
+    --netuid 498 \
+    --subtensor.network test \
+    --wallet.name miner \
+    --wallet.hotkey default \
+    --axon.port 8091
 ```
 
-## Choosing a role
+---
 
-* To run a miner → read [MINER.md](MINER.md)
-* To run a validator → read [VALIDATOR.md](VALIDATOR.md)
+## License
+MIT License. Protected evaluation runtime components are proprietary to the subnet operator.

@@ -95,6 +95,7 @@ class Validator(BaseValidatorNeuron):
 
         self.annotation_scores = np.zeros(self.metagraph.n, dtype=np.float32)
         self.adoption_bonus_scores = np.zeros(self.metagraph.n, dtype=np.float32)
+        self.selection_contribution_scores = np.zeros(self.metagraph.n, dtype=np.float32)
         self.last_commercial_dataset_uri: Optional[str] = None
 
         bt.logging.info("event=validator_init mode=annotation_only")
@@ -112,6 +113,10 @@ class Validator(BaseValidatorNeuron):
             self.adoption_bonus_scores[uid] = (
                 alpha * item.adoption_bonus
                 + (1.0 - alpha) * self.adoption_bonus_scores[uid]
+            )
+            self.selection_contribution_scores[uid] = (
+                alpha * item.selection_contribution
+                + (1.0 - alpha) * self.selection_contribution_scores[uid]
             )
 
     def set_weights(self):
@@ -179,6 +184,7 @@ class Validator(BaseValidatorNeuron):
 
         self.annotation_scores = _resize(self.annotation_scores)
         self.adoption_bonus_scores = _resize(self.adoption_bonus_scores)
+        self.selection_contribution_scores = _resize(self.selection_contribution_scores)
 
     def _on_hotkey_changed(
         self, uid: int, old_hotkey: str | None, new_hotkey: str | None
@@ -186,7 +192,9 @@ class Validator(BaseValidatorNeuron):
         """Clear validator-owned histories when a UID changes miner identity."""
         if hasattr(self, "scores") and uid < len(self.scores):
             self.scores[uid] = 0.0
-        for name in ("annotation_scores", "adoption_bonus_scores"):
+        for name in (
+            "annotation_scores", "adoption_bonus_scores", "selection_contribution_scores"
+        ):
             values = getattr(self, name, None)
             if values is not None and uid < len(values):
                 values[uid] = 0.0
@@ -206,6 +214,9 @@ class Validator(BaseValidatorNeuron):
         adoption_bonus_scores = getattr(self, "adoption_bonus_scores", None)
         if adoption_bonus_scores is None:
             adoption_bonus_scores = np.zeros(current_n, dtype=np.float32)
+        selection_contribution_scores = getattr(self, "selection_contribution_scores", None)
+        if selection_contribution_scores is None:
+            selection_contribution_scores = np.zeros(current_n, dtype=np.float32)
         last_commercial_dataset_uri = getattr(self, "last_commercial_dataset_uri", None)
         np.savez(
             self.config.neuron.full_path + "/state.npz",
@@ -214,6 +225,7 @@ class Validator(BaseValidatorNeuron):
             hotkeys=self.hotkeys,
             annotation_scores=annotation_scores,
             adoption_bonus_scores=adoption_bonus_scores,
+            selection_contribution_scores=selection_contribution_scores,
             last_commercial_dataset_uri=last_commercial_dataset_uri or "",
         )
         if hasattr(self, "dataset_assembler"):
@@ -253,6 +265,8 @@ class Validator(BaseValidatorNeuron):
             self.annotation_scores = _fit(state["annotation_scores"])
         if "adoption_bonus_scores" in state:
             self.adoption_bonus_scores = _fit(state["adoption_bonus_scores"])
+        if "selection_contribution_scores" in state:
+            self.selection_contribution_scores = _fit(state["selection_contribution_scores"])
         if "last_commercial_dataset_uri" in state:
             value = state["last_commercial_dataset_uri"].item()
             self.last_commercial_dataset_uri = value if value else None

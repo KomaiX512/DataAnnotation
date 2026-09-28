@@ -6,6 +6,7 @@ import numpy as np
 
 MIN_INCENTIVE_SCORE = 0.05
 MAX_CUMULATIVE_FLOOR = 0.20
+SELECTION_ELIGIBILITY_MIN_FIDELITY = 0.20
 
 
 def broad_softmax_scores(

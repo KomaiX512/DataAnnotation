@@ -45,6 +45,7 @@ from template.hazard.image_corpus import (
     _severity_for_label,
 )
 from template.protocol import PerImageAnnotationItem
+from template.validator.selection_adapter import SelectedAnnotationRecord
 from template.validator.dual_forward import (
     _build_full_dataset_plan,
     _build_round_annotation_plan,
@@ -431,6 +432,474 @@ def test_unlabeled_consensus_adoption_requires_rewardable_golden_evidence():
     )
     assert breakdowns[0].adoption_bonus == pytest.approx(0.5)
     assert rewards[0] == pytest.approx(0.78)
+
+
+def test_vision_selected_rows_pay_separate_selection_component_without_gt_verification():
+    scores = {
+        uid: PerMinerAnnotationScore(
+            uid=uid,
+            fidelity_scores_by_image_id={"g1": 0.8, "g2": 0.8, "g3": 0.8},
+            localization_iou_mean=0.9,
+        )
+        for uid in (1, 2)
+    }
+    selected = WinningAnnotation(
+        image_id="selected-public-image",
+        score=0.8,
+        chosen_uid=2,
+        is_golden=False,
+        ground_truth_verified=False,
+        aggregation_method="vision_model_selection_v1",
+        image_url="file:///public.png",
+        width=100,
+        height=100,
+        escalation_required=False,
+        escalation_reason=None,
+        accepted_objects=[],
+        miner_contribution_scores={2: 1.0},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+        selection_accepted=True,
+    )
+    rewards, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[1, 2],
+        annotation_scores=scores,
+        ledger=AdoptionLedger(),
+        round_winners=[selected],
+        selection_public_image_count=2,
+        selection_fidelity_by_uid={1: 0.8, 2: 0.8},
+        selection_caps_by_uid={1: 1, 2: 1},
+        selection_source_uid_by_image={"selected-public-image": 2},
+    )
+    assert rewards[1] > rewards[0]
+    assert breakdowns[1].selection_contribution == pytest.approx(0.5)
+    assert breakdowns[0].selection_contribution == pytest.approx(0.0)
+    assert breakdowns[1].adoption_bonus == pytest.approx(0.0)
+    assert selected.ground_truth_verified is False
+
+
+def test_selection_reward_requires_matching_quality_accepted_provenance():
+    selected = WinningAnnotation(
+        image_id="chosen-but-rejected-image",
+        score=0.8,
+        chosen_uid=2,
+        is_golden=False,
+        ground_truth_verified=False,
+        aggregation_method="vision_model_selection_v1",
+        image_url="file:///public.png",
+        width=100,
+        height=100,
+        escalation_required=False,
+        escalation_reason=None,
+        accepted_objects=[],
+        miner_contribution_scores={2: 1.0},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+        selection_accepted=True,
+    )
+    common = dict(
+        uids=[2],
+        annotation_scores={2: PerMinerAnnotationScore(uid=2, fidelity_scores_by_image_id={"g": 0.0})},
+        ledger=AdoptionLedger(),
+        round_winners=[selected],
+        selection_public_image_count=1,
+        selection_fidelity_by_uid={2: 0.8},
+        selection_caps_by_uid={2: 1},
+    )
+    _, without_provenance = DualFlywheelRewardComposer(alpha=0.7).compose(**common)
+    assert without_provenance[0].selection_contribution == 0.0
+
+    _, mismatched_source = DualFlywheelRewardComposer(alpha=0.7).compose(
+        **common,
+        selection_source_uid_by_image={"chosen-but-rejected-image": 3},
+    )
+    assert mismatched_source[0].selection_contribution == 0.0
+
+    rejected = WinningAnnotation(
+        **{
+            **selected.__dict__,
+            "selection_accepted": False,
+            "miner_contribution_scores": {},
+        }
+    )
+    _, rejected_breakdown = DualFlywheelRewardComposer(alpha=0.7).compose(
+        **{**common, "round_winners": [rejected]},
+        selection_source_uid_by_image={},
+    )
+    assert rejected_breakdown[0].selection_contribution == 0.0
+
+
+@pytest.mark.parametrize("batch_fidelity", [0.0, 0.199999, float("nan")])
+def test_uneligible_or_nonfinite_fidelity_cannot_earn_selection_reward(batch_fidelity):
+    selected = WinningAnnotation(
+        image_id="selected-public-image",
+        score=0.0,
+        chosen_uid=2,
+        is_golden=False,
+        ground_truth_verified=False,
+        aggregation_method="vision_model_selection_v1",
+        image_url="file:///public.png",
+        width=100,
+        height=100,
+        escalation_required=False,
+        escalation_reason=None,
+        accepted_objects=[],
+        miner_contribution_scores={2: 1.0},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+        selection_accepted=True,
+    )
+    rewards, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[2],
+        annotation_scores={
+            2: PerMinerAnnotationScore(uid=2, fidelity_scores_by_image_id={"g": 0.0})
+        },
+        ledger=AdoptionLedger(),
+        round_winners=[selected],
+        selection_public_image_count=1,
+        selection_fidelity_by_uid={2: batch_fidelity},
+        selection_caps_by_uid={2: 1},
+        selection_source_uid_by_image={"selected-public-image": 2},
+    )
+    assert breakdowns[0].selection_contribution == 0.0
+    assert rewards[0] == 0.0
+
+
+def test_policy_rejection_and_escalation_cannot_earn_selection_reward():
+    selected = WinningAnnotation(
+        image_id="rejected-public-image",
+        score=1.0,
+        chosen_uid=2,
+        is_golden=False,
+        ground_truth_verified=False,
+        aggregation_method="vision_model_selection_v1",
+        image_url="file:///public.png",
+        width=100,
+        height=100,
+        escalation_required=True,
+        escalation_reason="full_frame_box_requires_review",
+        accepted_objects=[],
+        miner_contribution_scores={},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+        selection_accepted=False,
+    )
+    _, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[2],
+        annotation_scores={2: PerMinerAnnotationScore(uid=2, fidelity_scores_by_image_id={"g": 1.0})},
+        ledger=AdoptionLedger(),
+        round_winners=[selected],
+        selection_public_image_count=1,
+        selection_fidelity_by_uid={2: 1.0},
+        selection_caps_by_uid={2: 1},
+    )
+    assert breakdowns[0].selection_contribution == 0.0
+
+
+def test_over_cap_or_duplicate_selected_rows_cannot_earn_selection_reward():
+    def winner(image_id, uid=2):
+        return WinningAnnotation(
+            image_id=image_id,
+            score=1.0,
+            chosen_uid=uid,
+            is_golden=False,
+            ground_truth_verified=False,
+            aggregation_method="vision_model_selection_v1",
+            image_url="file:///public.png",
+            width=100,
+            height=100,
+            escalation_required=False,
+            escalation_reason=None,
+            accepted_objects=[],
+            miner_contribution_scores={uid: 1.0},
+            reliability_window="w",
+            acceptance_thresholds={},
+            validator_version="test",
+            timestamp="now",
+            selection_accepted=True,
+        )
+
+    cases = (
+        [winner("a"), winner("b")],
+        [winner("a"), winner("a")],
+        [winner("same-public-image", 2), winner("same-public-image", 3)],
+    )
+    for rows in cases:
+        _, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+            uids=[2, 3],
+            annotation_scores={
+                uid: PerMinerAnnotationScore(uid=uid, fidelity_scores_by_image_id={"g": 0.8})
+                for uid in (2, 3)
+            },
+            ledger=AdoptionLedger(),
+            round_winners=rows,
+            selection_public_image_count=2,
+            selection_fidelity_by_uid={2: 0.8, 3: 0.8},
+            selection_caps_by_uid={2: 1, 3: 1},
+            selection_source_uid_by_image={row.image_id: row.chosen_uid for row in rows},
+        )
+        assert breakdowns[0].selection_contribution == 0.0
+        assert breakdowns[1].selection_contribution == 0.0
+
+
+def test_exact_selection_fidelity_boundary_is_eligible_for_reward():
+    selected = WinningAnnotation(
+        image_id="boundary-image",
+        score=0.20,
+        chosen_uid=4,
+        is_golden=False,
+        ground_truth_verified=False,
+        aggregation_method="vision_model_selection_v1",
+        image_url="file:///boundary.png",
+        width=10,
+        height=10,
+        escalation_required=False,
+        escalation_reason=None,
+        accepted_objects=[],
+        miner_contribution_scores={4: 1.0},
+        reliability_window="w",
+        acceptance_thresholds={},
+        validator_version="test",
+        timestamp="now",
+        selection_accepted=True,
+    )
+    _, breakdowns = DualFlywheelRewardComposer(alpha=0.7).compose(
+        uids=[4],
+        annotation_scores={4: PerMinerAnnotationScore(uid=4, fidelity_scores_by_image_id={"g": 0.0})},
+        ledger=AdoptionLedger(),
+        round_winners=[selected],
+        selection_public_image_count=1,
+        selection_fidelity_by_uid={4: 0.20},
+        selection_caps_by_uid={4: 1},
+        selection_source_uid_by_image={"boundary-image": 4},
+    )
+    assert breakdowns[0].selection_contribution == pytest.approx(1.0)
+
+
+def test_selected_record_export_preserves_one_submitted_record_and_stays_unverified(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    item = PerImageAnnotationItem(
+        hazard_class="selected-class",
+        bounding_box=[12, 18, 42, 58],
+        polygon=[[12, 18], [42, 18], [42, 58], [12, 58]],
+        confidence=0.61,
+    )
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(item,),
+        model_version="selected-miner-model-v1",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    winners = assembler.assemble_selected_records(
+        selected_by_image={public.image_id: selected},
+        miner_hotkeys={7: "selected-hotkey"},
+        fidelity_by_uid={7: 0.8},
+        timestamps={7: "2026-09-27T00:00:00Z"},
+    )
+    assert len(winners) == 1
+    winner = winners[0]
+    assert winner.chosen_uid == 7
+    assert winner.ground_truth_verified is False
+    assert winner.source_model_version == "selected-miner-model-v1"
+    assert winner.aggregation_method == "vision_model_selection_v1"
+    assert len(winner.accepted_objects) == 1
+    assert winner.accepted_objects[0].accepted_hazard_class == "selected-class"
+    assert winner.accepted_objects[0].fused_bounding_box == (12.0, 18.0, 42.0, 58.0)
+    assert winner.accepted_objects[0].miner_votes[0].miner_uid == 7
+    assert winner.to_jsonable()["ground_truth_verified"] is False
+    assert winner.selection_accepted is True
+
+
+def test_empty_policy_accepted_record_remains_available_for_negative_images(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(),
+        model_version="empty-negative-model",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    winner = assembler.assemble_selected_records(
+        selected_by_image={public.image_id: selected},
+        miner_hotkeys={7: "selected-hotkey"},
+        fidelity_by_uid={7: 0.8},
+        timestamps={7: "now"},
+    )[0]
+    assert winner.accepted_objects == ()
+    assert winner.escalation_required is False
+    assert winner.selection_accepted is True
+    assert winner.ground_truth_verified is False
+
+
+def test_selected_empty_record_remains_exportable_without_ground_truth_flag(tmp_path):
+    """An empty annotation is a valid whole record; quality must be judged upstream."""
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(),
+        model_version="empty-record-model",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    winner = assembler.assemble_selected_records(
+        selected_by_image={public.image_id: selected},
+        miner_hotkeys={7: "selected-hotkey"},
+        fidelity_by_uid={7: 0.8},
+        timestamps={7: "now"},
+    )[0]
+    assert winner.accepted_objects == ()
+    assert winner.selection_accepted is True
+    assert winner.ground_truth_verified is False
+
+
+def test_selected_record_identity_and_scored_uid_are_checked_at_export_boundary(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    selected = SelectedAnnotationRecord(
+        image_id="different-image",
+        source_uid=7,
+        annotations=(),
+        model_version="test",
+        policy_accepted=True,
+    )
+    with pytest.raises(ValueError, match="identity does not match"):
+        assembler.assemble_selected_records(
+            selected_by_image={public.image_id: selected},
+            miner_hotkeys={7: "selected-hotkey"},
+            fidelity_by_uid={7: 0.8},
+            timestamps={7: "now"},
+        )
+
+    unknown_uid = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=99,
+        annotations=(),
+        model_version="test",
+        policy_accepted=True,
+    )
+    with pytest.raises(ValueError, match="outside the scored task"):
+        assembler.assemble_selected_records(
+            selected_by_image={public.image_id: unknown_uid},
+            miner_hotkeys={7: "selected-hotkey"},
+            fidelity_by_uid={7: 0.8},
+            timestamps={7: "now"},
+        )
+
+
+@pytest.mark.parametrize(
+    "polygon",
+    [
+        [],
+        [[12, 18], [42, 18], [200, 58]],
+        [[11, 18], [42, 18], [42, 58]],
+        [[12, 18], [42, 18], [float("nan"), 58]],
+    ],
+)
+def test_selected_record_export_rechecks_polygon_bounds_and_finiteness(tmp_path, polygon):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    # Bypass the protocol constructor to exercise the assembler's own boundary.
+    item = PerImageAnnotationItem.model_construct(
+        hazard_class="selected-class",
+        bounding_box=[12, 18, 42, 58],
+        polygon=polygon,
+        area=None,
+        weight=None,
+        confidence=None,
+    )
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(item,),
+        model_version="malformed-polygon",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    with pytest.raises(ValueError, match="polygon geometry"):
+        assembler.assemble_selected_records(
+            selected_by_image={public.image_id: selected},
+            miner_hotkeys={7: "selected-hotkey"},
+            fidelity_by_uid={7: 0.8},
+            timestamps={7: "now"},
+        )
+
+
+def test_full_frame_selection_is_escalated_and_not_exported_or_rewarded(tmp_path):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(PerImageAnnotationItem(
+            hazard_class="selected-class",
+            bounding_box=[0, 0, public.width, public.height],
+        ),),
+        model_version="full-frame-model",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    winner = assembler.assemble_selected_records(
+        selected_by_image={public.image_id: selected},
+        miner_hotkeys={7: "selected-hotkey"},
+        fidelity_by_uid={7: 0.8},
+        timestamps={7: "now"},
+    )[0]
+    assert winner.escalation_required is True
+    assert winner.selection_accepted is False
+    assert "full_frame_box_requires_review" in winner.escalation_reason
+    assert assembler.export([winner], round_id="full-frame") == ""
+
+
+def test_file_export_never_uses_r2_even_when_credentials_are_passed(tmp_path, monkeypatch):
+    corpus = _build_synthetic_corpus(tmp_path)
+    public = corpus.annotation_images()[0]
+    item = PerImageAnnotationItem(
+        hazard_class="selected-class",
+        bounding_box=[12, 18, 42, 58],
+        confidence=0.6,
+    )
+    selected = SelectedAnnotationRecord(
+        image_id=public.image_id,
+        source_uid=7,
+        annotations=(item,),
+        model_version="local-export-test",
+        policy_accepted=True,
+    )
+    assembler = DatasetAssembler(corpus=corpus, storage_prefix=tmp_path.as_uri())
+    winner = assembler.assemble_selected_records(
+        selected_by_image={public.image_id: selected},
+        miner_hotkeys={7: "local-hotkey"},
+        fidelity_by_uid={7: 0.8},
+        timestamps={7: "now"},
+    )[0]
+
+    def fail_if_remote_write(*args, **kwargs):
+        raise AssertionError("local file export attempted an R2 write")
+
+    monkeypatch.setattr(assembler, "_upload_commercial_image", fail_if_remote_write)
+    monkeypatch.setattr(assembler, "_export_r2_mirror", fail_if_remote_write)
+    output_uri = assembler.export(
+        [winner],
+        round_id="local-only",
+        commercial_r2_credentials=object(),
+    )
+    assert output_uri.startswith("file://")
 
 
 def test_clean_or_single_positive_goldens_cannot_qualify_direct_or_adoption_rewards():

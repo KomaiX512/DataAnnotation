@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import shutil
 import tempfile
 from pathlib import Path
@@ -37,6 +38,13 @@ from template.validator.dual_forward import (
     _parse_annotations_payload,
     _validate_response_shape,
 )
+
+
+def _unused_loopback_port() -> int:
+    """Ask the OS for an unused loopback port for this isolated test run."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
 
 
 @pytest.fixture
@@ -453,7 +461,7 @@ async def test_isolated_localnet_real_axon_handshake(isolated_env):
     val_w.set_coldkey(bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic()), encrypt=False, overwrite=True)
     val_w.set_hotkey(bt.Keypair.create_from_mnemonic(bt.Keypair.generate_mnemonic()), encrypt=False, overwrite=True)
 
-    test_port = 9876
+    test_port = _unused_loopback_port()
 
     async def forward_annotation(synapse: AnnotationTask) -> AnnotationTask:
         assert synapse.task_id == "network-handshake-task-1"
@@ -466,8 +474,24 @@ async def test_isolated_localnet_real_axon_handshake(isolated_env):
     axon = bt.axon(wallet=miner_w, ip="127.0.0.1", port=test_port)
     axon.attach(forward_fn=forward_annotation)
     axon.start()
+    dendrite = None
 
     try:
+        async def wait_until_ready() -> None:
+            deadline = asyncio.get_running_loop().time() + 10.0
+            last_error: Exception | None = None
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", test_port)
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+                except OSError as exc:
+                    last_error = exc
+                    await asyncio.sleep(0.05)
+            raise TimeoutError(f"loopback Axon did not become ready: {last_error}")
+
+        await wait_until_ready()
         dendrite = bt.dendrite(wallet=val_w)
         synapse = AnnotationTask(
             task_id="network-handshake-task-1",
@@ -489,9 +513,21 @@ async def test_isolated_localnet_real_axon_handshake(isolated_env):
         )
         responses = await dendrite([target], synapse, timeout=10)
         resp = responses[0]
-        assert resp.is_success is True
+        status_code = resp.dendrite.status_code
+        status_message = resp.dendrite.status_message
+        print(
+            f"\n[NETWORK-HANDSHAKE RESPONSE] status={status_code!r} "
+            f"message={status_message!r}"
+        )
+        assert resp.is_success is True, (
+            f"Axon/Dendrite handshake failed: status={status_code!r} "
+            f"message={status_message!r}"
+        )
+        assert str(status_code).startswith("200"), (
+            f"Expected HTTP 200 over loopback, got {status_code!r}: {status_message!r}"
+        )
         assert resp.annotations_uri == "file:///tmp/mock_network_annotations.json"
-        print(f"\n[NETWORK-HANDSHAKE SUCCESS] Real axon on port {test_port} responded to dendrite successfully.")
     finally:
+        if dendrite is not None:
+            await dendrite.aclose_session()
         axon.stop()
-

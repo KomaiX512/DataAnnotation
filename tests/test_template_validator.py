@@ -12,6 +12,7 @@ from template.hazard.annotation_eval import PerMinerAnnotationScore
 from template.hazard.annotation_eval import _ReliabilityAccumulator
 from template.hazard.dual_reward import DualFlywheelBreakdown
 from template.hazard.incentives import broad_softmax_scores
+from template.base.validator import BaseValidatorNeuron
 from template.protocol import (
     AnnotationTask,
     AnnotationsFilePayload,
@@ -27,6 +28,78 @@ from template.validator.dual_forward import (
 )
 from template.hazard.r2_storage import download_bytes_from_r2
 from neurons.validator import Validator
+
+
+def test_selection_signal_persists_and_reaches_mocked_weight_boundary(tmp_path, monkeypatch):
+    config = SimpleNamespace(
+        neuron=SimpleNamespace(
+            full_path=str(tmp_path),
+            moving_average_alpha=0.4,
+            incentive_temperature=0.35,
+            incentive_floor=0.01,
+            incentive_min_score=0.05,
+        ),
+        subtensor=SimpleNamespace(chain_endpoint="ws://127.0.0.1:9944"),
+    )
+
+    def make_validator():
+        validator = Validator.__new__(Validator)
+        validator.config = config
+        validator.metagraph = SimpleNamespace(n=2, hotkeys=["hk-0", "hk-1"])
+        validator.step = 17
+        validator.hotkeys = np.asarray(["hk-0", "hk-1"])
+        validator.scores = np.zeros(2, dtype=np.float32)
+        validator.annotation_scores = np.zeros(2, dtype=np.float32)
+        validator.adoption_bonus_scores = np.zeros(2, dtype=np.float32)
+        validator.selection_contribution_scores = np.zeros(2, dtype=np.float32)
+        validator.last_commercial_dataset_uri = None
+        validator.dataset_assembler = SimpleNamespace(ledger=AdoptionLedger())
+        validator.reliability = _ReliabilityAccumulator()
+        return validator
+
+    validator = make_validator()
+    breakdowns = [
+        DualFlywheelBreakdown(
+            uid=1,
+            annotation_score=0.6,
+            adoption_bonus=0.0,
+            hallucination_multiplier=1.0,
+            final_score=0.42,
+            fidelity_image_ids=3,
+            consensus_image_ids=0,
+            adopted_image_ids_round=0,
+            adopted_image_ids_total=0,
+            selection_contribution=0.4,
+        )
+    ]
+    validator.update_score_ledgers(breakdowns, [1])
+    validator.update_scores(np.asarray([0.42], dtype=np.float32), [1])
+    assert validator.annotation_scores[1] == pytest.approx(0.24)
+    assert validator.selection_contribution_scores[1] == pytest.approx(0.16)
+    assert validator.scores[1] == pytest.approx(0.168)
+
+    validator.save_state()
+    restored = make_validator()
+    restored.load_state()
+    assert restored.scores == pytest.approx(validator.scores)
+    assert restored.annotation_scores == pytest.approx(validator.annotation_scores)
+    assert restored.selection_contribution_scores == pytest.approx(
+        validator.selection_contribution_scores
+    )
+
+    captured = {}
+
+    def capture_weight_call(self):
+        captured["weights"] = self.scores.copy()
+
+    monkeypatch.setattr(BaseValidatorNeuron, "set_weights", capture_weight_call)
+    monkeypatch.setenv("FORCE_LOCAL_SET_WEIGHTS", "1")
+    restored.set_weights()
+    assert captured["weights"].shape == (2,)
+    assert float(captured["weights"].sum()) == pytest.approx(1.0)
+    assert restored.scores == pytest.approx(validator.scores)
+
+
 
 
 def test_broad_softmax_pays_multiple_value_adding_miners():
@@ -490,4 +563,3 @@ def test_set_weights_skips_when_scores_are_zero():
 
     # Subtensor.set_weights MUST NOT be called when scores are zero
     validator.subtensor.set_weights.assert_not_called()
-

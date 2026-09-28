@@ -108,7 +108,8 @@ class AnnotationEngine:
         try:
             self._validate_request(synapse)
             creds = load_r2_credentials_from_env()
-            remote_base = f"{self.r2_prefix.strip().rstrip('/')}/{synapse.task_id}/"
+            miner_sub = f"/{miner_hotkey}" if miner_hotkey else ""
+            remote_base = f"{self.r2_prefix.strip().rstrip('/')}/{synapse.task_id}{miner_sub}/"
 
             records: list[ImageAnnotationDocument] = []
             for spec in synapse.annotation_images:
@@ -125,16 +126,21 @@ class AnnotationEngine:
                         model_version=self.model_version,
                         miner_uid=miner_hotkey,
                     )
+                    records.append(doc)
                 else:
                     raise ValueError(
                         f"Unknown annotation_backend: {self.annotation_backend!r}; "
                         "use yolo."
                     )
-                records.append(doc)
-
+            bt.logging.info(
+                f"[MINER] Synced to Task {synapse.task_id} (Batch: {getattr(synapse, 'batch_id', 'N/A')}, Round: {getattr(synapse, 'round_num', 0)}). "
+                f"Processing {len(synapse.annotation_images)} images..."
+            )
             payload = AnnotationsFilePayload(
                 schema_version="annotations.v1",
                 task_id=synapse.task_id,
+                batch_id=str(getattr(synapse, "batch_id", "") or ""),
+                round_num=int(getattr(synapse, "round_num", 0) or 0),
                 records=records,
             )
             raw = json.dumps(payload.model_dump(), indent=2, sort_keys=True).encode("utf-8")

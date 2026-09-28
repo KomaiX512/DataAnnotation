@@ -180,6 +180,8 @@ artifacts/
 runs/
 subtensor/
 models/
+template/validator/*_src.py
+template/validator/.*_raw.py
 # ML Models / Checkpoints
 *.pt
 *.pth

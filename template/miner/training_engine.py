@@ -278,12 +278,15 @@ class ModelTrainingAnnotationEngine:
             payload = AnnotationsFilePayload(
                 schema_version="annotations.v1",
                 task_id=synapse.task_id,
+                batch_id=str(getattr(synapse, "batch_id", "") or ""),
+                round_num=int(getattr(synapse, "round_num", 0) or 0),
                 records=records,
             )
 
             # 7. Upload to R2
             creds = load_r2_credentials_from_env()
-            remote_base = f"{self.r2_prefix.rstrip('/')}/{synapse.task_id}/"
+            miner_sub = f"/{miner_hotkey}" if miner_hotkey else ""
+            remote_base = f"{self.r2_prefix.rstrip('/')}/{synapse.task_id}{miner_sub}/"
             raw = json.dumps(
                 payload.model_dump(), indent=2, sort_keys=True
             ).encode("utf-8")

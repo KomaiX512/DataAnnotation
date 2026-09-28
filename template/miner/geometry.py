@@ -143,10 +143,24 @@ def extract_canopy_geometry(
                     cnt = max(contours, key=cv2.contourArea)
                     c_area = float(cv2.contourArea(cnt))
                     if c_area > 8:
-                        rect = cv2.minAreaRect(cnt)
-                        box_pts = cv2.boxPoints(rect)
-                        poly = [[round(float(p[0] + ix1), 2), round(float(p[1] + iy1), 2)] for p in box_pts]
-                        poly_area = c_area
+                        peri = cv2.arcLength(cnt, True)
+                        epsilon = 0.010 * peri
+                        approx = cv2.approxPolyDP(cnt, epsilon, True)
+                        if len(approx) < 4:
+                            approx = cv2.approxPolyDP(cnt, 0.005 * peri, True)
+                        if len(approx) >= 4:
+                            poly = [[round(float(p[0][0] + ix1), 2), round(float(p[0][1] + iy1), 2)] for p in approx]
+                            poly_area = c_area
+                        else:
+                            hull = cv2.convexHull(cnt)
+                            if len(hull) >= 4:
+                                poly = [[round(float(p[0][0] + ix1), 2), round(float(p[0][1] + iy1), 2)] for p in hull]
+                                poly_area = c_area
+                            else:
+                                rect = cv2.minAreaRect(cnt)
+                                box_pts = cv2.boxPoints(rect)
+                                poly = [[round(float(p[0] + ix1), 2), round(float(p[1] + iy1), 2)] for p in box_pts]
+                                poly_area = c_area
         except Exception:
             pass
 

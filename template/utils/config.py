@@ -708,8 +708,8 @@ def add_validator_args(cls, parser):
         "--neuron.flywheel_alpha_annotation",
         type=float,
         help=(
-            "Weight on annotation fidelity/consensus in the final on-chain score; "
-            "adoption bonus receives (1 - alpha)."
+            "Weight on annotation fidelity in the final on-chain score; "
+            "selection/adoption receives (1 - alpha)."
         ),
         default=0.7,
     )

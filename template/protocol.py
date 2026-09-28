@@ -152,6 +152,8 @@ class ImageAnnotationDocument(BaseModel):
 class AnnotationsFilePayload(BaseModel):
     schema_version: str = Field("annotations.v1", min_length=1)
     task_id: str = Field("", min_length=0)
+    batch_id: str = Field("", description="Active batch identifier matching task")
+    round_num: int = Field(0, description="Active sequential round number matching task")
     records: List[ImageAnnotationDocument] = Field(..., max_length=8192)
 
 
@@ -168,6 +170,8 @@ class R2AccessCredentials(BaseModel):
 class AnnotationTask(bt.Synapse):
     schema_version: str = Field("hazard.annotation.v1")
     task_id: str = Field("")
+    batch_id: str = Field("", description="Active batch identifier (e.g. batch_1)")
+    round_num: int = Field(0, description="Active sequential round number (1-indexed)")
     challenge_nonce: str = Field("")
     annotation_images: List[UnlabeledAnnotationImage] = Field(default_factory=list)
     training_pool: List[LabeledTrainingImage] = Field(default_factory=list)
