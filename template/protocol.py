@@ -178,6 +178,7 @@ class AnnotationTask(bt.Synapse):
     training_pool_hash: str = Field("")
     annotations_uri: str = Field("")
     miner_r2_credentials: Optional[R2AccessCredentials] = Field(None)
+    miner_r2_credentials_json: Optional[str] = Field(None, description="Serialized miner R2 credentials for network transport")
     duration_ms: Optional[int] = Field(None, ge=0)
     error_message: Optional[str] = Field(None, max_length=1024)
 

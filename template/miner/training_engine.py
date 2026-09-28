@@ -300,6 +300,7 @@ class ModelTrainingAnnotationEngine:
 
             synapse.annotations_uri = annotations_uri
             synapse.miner_r2_credentials = creds
+            synapse.miner_r2_credentials_json = creds.model_dump_json() if creds else None
             synapse.error_message = None
 
             bt.logging.info(

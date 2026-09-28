@@ -14,6 +14,7 @@ _BACKEND_REGISTRY: Dict[str, str] = {
     "yolo_local": "template.miner.backends.yolo_local.YoloLocalBackend",
     "self_hosted": "template.miner.backends.self_hosted.SelfHostedBackend",
     "openai_vision": "template.miner.backends.openai_vision.OpenAIVisionBackend",
+    "qwen_vl": "template.miner.backends.qwen_vl.QwenVLBackend",
 }
 
 

@@ -19,8 +19,11 @@
 
 import typing
 
-import template.compat.bittensor_commit_hotkey  # noqa: F401 — before bittensor: drand hotkey + subtensor rebind
+from dotenv import load_dotenv
 
+load_dotenv()
+
+import template.compat.bittensor_commit_hotkey  # noqa: F401
 import bittensor as bt
 
 import template
@@ -40,7 +43,7 @@ class Miner(BaseMinerNeuron):
             getattr(getattr(self.config, "miner", object()), "model_backend", "") or ""
         ).strip()
 
-        if backend in ("yolo_local", "self_hosted", "openai_vision"):
+        if backend in ("yolo_local", "self_hosted", "openai_vision", "qwen_vl"):
             from template.miner.training_engine import ModelTrainingAnnotationEngine
 
             self.annotation_engine = ModelTrainingAnnotationEngine(config=self.config)

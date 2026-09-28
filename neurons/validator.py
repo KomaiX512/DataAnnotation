@@ -19,8 +19,10 @@ class PasswordWallet(_orig_wallet):
         pw = os.getenv("BITTENSOR_WALLET_PASSWORD")
         return self.get_coldkey(password=pw)
 bt.wallet = PasswordWallet
-bt.subtensor.commit_reveal_enabled = lambda self, netuid, block=None: False
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from template.base.validator import BaseValidatorNeuron
 from template.hazard.annotation_eval import AnnotationFidelityScorer, ConsensusScorer, _ReliabilityAccumulator

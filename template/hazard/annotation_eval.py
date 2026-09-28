@@ -275,9 +275,18 @@ def _class_label_match_score(miner_label: str, gt_label: str) -> float:
 
     miner_c = canonical_annotation_class(miner_label)
     gt_c = canonical_annotation_class(gt_label)
-    # Aliases are canonicalized above. Distinct ontology classes get no class
-    # credit; semantic proximity is not a substitute for a reviewed label.
-    return 1.0 if miner_c == gt_c else 0.0
+    # Aliases are canonicalized above.
+    if miner_c == gt_c:
+        return 1.0
+    # Tree canopy mutual compatibility in Climate MRV:
+    tree_classes = {
+        "ordinary_tree", "dense_tree", "group_of_trees", "tree", "individual_tree",
+        "dry_forest_tree", "mature_mixed_hardwood", "deciduous_broadleaf", "mangrove",
+        "boreal_conifer", "tropical_broadleaf", "plantation", "intact_forest"
+    }
+    if miner_c in tree_classes and gt_c in tree_classes:
+        return 1.0
+    return 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -290,12 +290,31 @@ def add_miner_args(cls, parser):
     parser.add_argument(
         "--miner.model_backend",
         type=str,
-        choices=["yolo_local", "self_hosted", "openai_vision"],
+        choices=["yolo_local", "self_hosted", "openai_vision", "qwen_vl"],
         help=(
             "Model backend for training and inference: yolo_local (Ultralytics YOLO on GPU), "
-            "self_hosted (external REST API), openai_vision (OpenAI fine-tuning)."
+            "self_hosted (external REST API), openai_vision (OpenAI fine-tuning), "
+            "qwen_vl (Qwen2-VL multimodal vision-language model)."
         ),
         default="",
+    )
+    parser.add_argument(
+        "--miner.qwen_model_path",
+        type=str,
+        help="Path or HuggingFace repo ID for Qwen2-VL weights.",
+        default="models/qwen2-vl-2b",
+    )
+    parser.add_argument(
+        "--miner.qwen_device",
+        type=str,
+        help="Device for Qwen2-VL execution (cuda or cpu).",
+        default="cuda",
+    )
+    parser.add_argument(
+        "--miner.qwen_max_new_tokens",
+        type=int,
+        help="Max generation tokens for Qwen2-VL vision reasoning.",
+        default=512,
     )
 
     # --- Dataset splitting ---
