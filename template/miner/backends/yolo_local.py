@@ -91,6 +91,8 @@ class YoloLocalBackend(BaseModelBackend):
 
         # Cached fine-tuned checkpoint for infer()
         self._fine_tuned_checkpoint: Optional[Path] = None
+        self._cached_model: Optional[object] = None
+        self._cached_checkpoint: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # BaseModelBackend interface
@@ -239,7 +241,16 @@ class YoloLocalBackend(BaseModelBackend):
             f"with checkpoint={checkpoint}"
         )
 
-        model = YOLO(str(checkpoint))
+        if self._cached_model is None or self._cached_checkpoint != checkpoint:
+            import cv2
+            import torch
+            if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
+                torch.set_num_threads(4)
+            if hasattr(cv2, "setNumThreads"):
+                cv2.setNumThreads(2)
+            self._cached_model = YOLO(str(checkpoint))
+            self._cached_checkpoint = checkpoint
+        model = self._cached_model
         results_map: Dict[str, List[PerImageAnnotationItem]] = {}
 
         for img in inference_images:
@@ -294,7 +305,16 @@ class YoloLocalBackend(BaseModelBackend):
         from ultralytics import YOLO
         from PIL import Image as PILImage
 
-        model = YOLO(str(self.pretrained_weights))
+        if self._cached_model is None or self._cached_checkpoint != self.pretrained_weights:
+            import cv2
+            import torch
+            if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
+                torch.set_num_threads(4)
+            if hasattr(cv2, "setNumThreads"):
+                cv2.setNumThreads(2)
+            self._cached_model = YOLO(str(self.pretrained_weights))
+            self._cached_checkpoint = self.pretrained_weights
+        model = self._cached_model
         labeled: List[TrainImage] = []
 
         for img in images:

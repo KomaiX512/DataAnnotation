@@ -65,10 +65,10 @@ class QwenVLBackend(BaseModelBackend):
             return
 
         import torch
-        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+        from transformers import AutoProcessor
 
         bt.logging.info(
-            f"QwenVLBackend: loading Qwen2-VL from {self.model_path} onto {self.device}..."
+            f"QwenVLBackend: loading vision-language model from {self.model_path} onto {self.device}..."
         )
         t0 = time.monotonic()
 
@@ -77,29 +77,42 @@ class QwenVLBackend(BaseModelBackend):
         dtype = torch.bfloat16 if torch.cuda.is_available() and self.device.startswith("cuda") else torch.float32
         device_map = "auto" if self.device.startswith("cuda") and torch.cuda.is_available() else None
 
-        self._model = Qwen2VLForConditionalGeneration.from_pretrained(
-            str(self.model_path),
-            dtype=dtype,
-            device_map=device_map,
-        )
+        try:
+            from transformers import AutoModelForVision2Seq
+            self._model = AutoModelForVision2Seq.from_pretrained(
+                str(self.model_path),
+                torch_dtype=dtype,
+                device_map=device_map,
+            )
+        except Exception as exc:
+            bt.logging.warning(
+                f"AutoModelForVision2Seq failed ({exc}), falling back to Qwen2VLForConditionalGeneration"
+            )
+            from transformers import Qwen2VLForConditionalGeneration
+            self._model = Qwen2VLForConditionalGeneration.from_pretrained(
+                str(self.model_path),
+                torch_dtype=dtype,
+                device_map=device_map,
+            )
         if device_map is None and hasattr(self._model, "to"):
             self._model = self._model.to(self.device)
 
         self._model.eval()
         dt = time.monotonic() - t0
-        bt.logging.info(f"QwenVLBackend: model loaded in {dt:.2f}s on device={self._model.device}")
+        bt.logging.info(f"QwenVLBackend: model loaded in {dt:.2f}s on device={getattr(self._model, 'device', self.device)}")
 
     def train(
         self,
         train_images: List[TrainImage],
         config: Dict,
     ) -> TrainResult:
-        """Fine-tuning or model checkpoint registration for Qwen2-VL.
+        """Fine-tuning or model checkpoint registration for Qwen-VL.
 
         Returns a consistent model version identifier.
         """
         self._ensure_model_loaded()
-        v_str = f"qwen2-vl-2b-{hashlib.sha256(str(self.model_path).encode()).hexdigest()[:12]}"
+        model_name_tag = self.model_path.name if self.model_path.name else "qwen-vl"
+        v_str = f"{model_name_tag}-{hashlib.sha256(str(self.model_path).encode()).hexdigest()[:12]}"
         self._model_version = v_str
         return TrainResult(
             model_version=v_str,
