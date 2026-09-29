@@ -731,7 +731,7 @@ class DatasetAssembler:
 
         # --- Upload images and rewrite image_url to public HTTP(S) ---
         parsed = urlparse(self.storage_prefix or "")
-        local_only_export = parsed.scheme == "file"
+        local_only_export = (parsed.scheme == "file") and not (dataset_name and batch_id)
         creds = None
         if not local_only_export:
             creds = commercial_r2_credentials
@@ -739,7 +739,7 @@ class DatasetAssembler:
                 try:
                     from template.hazard.r2_storage import load_r2_credentials_from_env
                     creds = load_r2_credentials_from_env()
-                except RuntimeError:
+                except Exception:
                     creds = None
 
         rewritten: List[dict] = []
@@ -825,11 +825,22 @@ class DatasetAssembler:
         body = (payload_lines + "\n").encode("utf-8")
 
         if parsed.scheme == "file":
-            # A local destination is strictly local even when operator R2
-            # credentials are injected for read-only dataset access.
-            return self._export_local(
+            local_uri = self._export_local(
                 body, parsed, round_id, dataset_name=dataset_name, batch_id=batch_id
             )
+            if creds is not None and dataset_name and batch_id:
+                try:
+                    self._export_object_storage(
+                        body,
+                        urlparse(f"r2://{creds.bucket_name}"),
+                        round_id,
+                        creds,
+                        dataset_name=dataset_name,
+                        batch_id=batch_id,
+                    )
+                except Exception as exc:
+                    bt.logging.warning(f"event=dataset_r2_mirror_error error={exc}")
+            return local_uri
         if parsed.scheme in ("r2", "s3"):
             if creds is None:
                 raise ValueError(
@@ -869,12 +880,23 @@ class DatasetAssembler:
                     font = ImageFont.load_default()
 
             for obj in objects:
-                if not obj.accepted_hazard_class or obj.accepted_hazard_class == "_background":
+                if isinstance(obj, dict):
+                    cls_name = obj.get("accepted_hazard_class") or obj.get("class_name")
+                    box = obj.get("fused_bounding_box") or obj.get("bounding_box")
+                    poly = obj.get("fused_polygon") or obj.get("polygon")
+                    conf = float(obj.get("confidence", 0.9))
+                else:
+                    cls_name = getattr(obj, "accepted_hazard_class", None)
+                    box = getattr(obj, "fused_bounding_box", None)
+                    poly = getattr(obj, "fused_polygon", None)
+                    conf = float(getattr(obj, "confidence", 0.9))
+
+                if not cls_name or cls_name == "_background":
                     continue
-                if not obj.fused_bounding_box:
+                if not box:
                     continue
 
-                xmin, ymin, xmax, ymax = obj.fused_bounding_box
+                xmin, ymin, xmax, ymax = box
                 # Handle normalized coordinates
                 if all(0.0 <= c <= 1.0 for c in (xmin, ymin, xmax, ymax)):
                     xmin *= w_img
@@ -890,11 +912,11 @@ class DatasetAssembler:
                 if xmax <= xmin or ymax <= ymin:
                     continue
 
-                color = self._get_color_for_class(obj.accepted_hazard_class)
+                color = self._get_color_for_class(cls_name)
 
                 # Draw polygon contour if available
-                if obj.fused_polygon and len(obj.fused_polygon) >= 3:
-                    pts = [(float(p[0]), float(p[1])) for p in obj.fused_polygon]
+                if poly and len(poly) >= 3:
+                    pts = [(float(p[0]), float(p[1])) for p in poly]
                     draw.line(pts + [pts[0]], fill=color, width=3)
 
                 # Draw bounding box
@@ -904,7 +926,7 @@ class DatasetAssembler:
                         outline=color,
                     )
 
-                label = f"{obj.accepted_hazard_class} ({obj.confidence:.2f})"
+                label = f"{cls_name} ({conf:.2f})"
 
                 try:
                     # In Pillow >= 10.0.0
@@ -1555,10 +1577,11 @@ class DatasetAssembler:
         base_dir = Path(parsed.path)
         if dataset_name and batch_id:
             directory = base_dir / dataset_name / batch_id
+            target = directory / "commercial-dataset.jsonl"
         else:
             directory = base_dir
+            target = directory / f"commercial-dataset-{round_id}.jsonl"
         directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"commercial-dataset-{round_id}.jsonl"
         target.write_bytes(body)
         if dataset_name and batch_id:
             annotations_json = directory / "annotations.json"
@@ -1597,7 +1620,7 @@ class DatasetAssembler:
             prefix = prefix + "/"
         if dataset_name and batch_id:
             object_key = f"{prefix}{dataset_name}/{batch_id}/annotations.json"
-            jsonl_key = f"{prefix}{dataset_name}/{batch_id}/commercial-dataset-{round_id}.jsonl"
+            jsonl_key = f"{prefix}{dataset_name}/{batch_id}/commercial-dataset.jsonl"
         else:
             object_key = f"{prefix}commercial-dataset-{round_id}.jsonl"
             jsonl_key = None

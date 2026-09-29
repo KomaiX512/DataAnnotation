@@ -87,7 +87,7 @@ def partition_dataset(
         golden_pool_files = sorted(list(Path(golden_source_dir).glob("*.jpg")) + list(Path(golden_source_dir).glob("*.png")))
         logger.info(f"Discovered {len(golden_pool_files)} verified golden ground-truth files in {golden_source_dir}")
 
-    total_possible_batches = len(all_raw_files) // public_per_batch
+    total_possible_batches = (len(all_raw_files) + public_per_batch - 1) // public_per_batch
     if max_batches is not None:
         total_possible_batches = min(total_possible_batches, max_batches)
 
@@ -112,7 +112,9 @@ def partition_dataset(
 
         # A. Select 3 Golden Samples
         batch_golden_srcs = []
-        if golden_pool_files and golden_offset < len(golden_pool_files):
+        if golden_pool_files:
+            if golden_offset + golden_per_batch > len(golden_pool_files):
+                golden_offset = 0
             batch_golden_srcs = golden_pool_files[golden_offset : golden_offset + golden_per_batch]
             golden_offset += len(batch_golden_srcs)
         else:
@@ -123,12 +125,11 @@ def partition_dataset(
         batch_public_srcs = all_raw_files[public_offset : public_offset + public_per_batch]
         public_offset += len(batch_public_srcs)
 
-        # If still short, pull from available candidates not in batch_golden_srcs
-        remaining = [f for f in all_raw_files if f not in batch_golden_srcs and f not in batch_public_srcs]
-        for f in remaining:
-            if len(batch_public_srcs) >= public_per_batch:
-                break
-            batch_public_srcs.append(f)
+        # If last batch has fewer than public_per_batch, wrap around
+        if len(batch_public_srcs) < public_per_batch:
+            needed = public_per_batch - len(batch_public_srcs)
+            extra = [f for f in all_raw_files if f not in batch_golden_srcs and f not in batch_public_srcs][:needed]
+            batch_public_srcs.extend(extra)
 
         logger.info(f"Selected {len(batch_golden_srcs)} golden audit chips and {len(batch_public_srcs)} public commercial chips.")
 
@@ -161,7 +162,10 @@ def partition_dataset(
 
         # D. Process Public Commercial Images (Uploaded to R2 & Local Mirror)
         public_manifest_records = []
-        for idx, p_src in enumerate(batch_public_srcs, 1):
+        upload_tasks = []
+
+        def _process_and_upload_chip(item):
+            idx, p_src = item
             neutral_id = get_neutral_chip_id(p_src, prefix="chip")
             dest_path = batch_pub_images_dir / neutral_id
             shutil.copy2(p_src, dest_path)
@@ -177,7 +181,7 @@ def partition_dataset(
                 except Exception as e:
                     logger.warning(f"  R2 image upload note: {e}")
 
-            public_manifest_records.append({
+            return {
                 "index": idx,
                 "image_id": neutral_id.replace(".jpg", ""),
                 "image_name": neutral_id,
@@ -186,7 +190,14 @@ def partition_dataset(
                 "width": width,
                 "height": height,
                 "is_golden": False,
-            })
+            }
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            public_manifest_records = list(executor.map(_process_and_upload_chip, enumerate(batch_public_srcs, 1)))
+
+        # Sort back to preserve index order
+        public_manifest_records.sort(key=lambda x: x["index"])
 
         # Save public manifest
         pub_manifest_file = batch_pub_dir / "manifest.json"
@@ -229,13 +240,15 @@ def main():
     parser.add_argument("--golden-dir", type=str, default="data/climate_mrv/samples/golden", help="Path to golden source images")
     parser.add_argument("--golden-labels", type=str, default="data/climate_mrv/samples/golden_labels.json", help="Path to golden ground-truth labels")
     parser.add_argument("--dataset-name", type=str, default="climate_mrv", help="Dataset namespace (default: climate_mrv)")
-    parser.add_argument("--max-batches", type=int, default=4, help="Maximum batches to formulate (default: 4)")
+    parser.add_argument("--max-batches", type=int, default=17, help="Maximum batches to formulate (default: 17)")
     parser.add_argument("--upload-r2", action="store_true", help="Upload public commercial chips to Cloudflare R2")
     args = parser.parse_args()
 
     r2_creds = None
     if args.upload_r2:
         try:
+            from dotenv import load_dotenv
+            load_dotenv()
             r2_creds = load_r2_credentials_from_env()
             logger.info(f"Loaded Cloudflare R2 credentials for bucket: {r2_creds.bucket_name}")
         except Exception as e:

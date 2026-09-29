@@ -117,7 +117,7 @@ class TestZeroDetectionFidelity:
             ),
         ))
         item = PerImageAnnotationItem(
-            hazard_class="dense_tree",
+            hazard_class="water",
             bounding_box=[100, 100, 200, 200],
         )
         result = AnnotationFidelityScorer().score([item], golden)
