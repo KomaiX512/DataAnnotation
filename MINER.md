@@ -127,6 +127,12 @@ To protect network integrity and prevent denial-of-service, validators enforce s
    - Use only the opaque `image_id` strings provided in the synapse. Responses referencing unknown image IDs are discarded.
 4. **Duplicate & Coalition Detection**:
    - Submissions identical across multiple UIDs are flagged. Sybil coalitions copying weights or sharing identical coordinate sets are penalized.
+5. **Annotation Density Cap**:
+   - The protocol accepts up to 512 annotations per image. If a detector outputs more than 512 items, the validator automatically retains the top 512 predictions sorted by confidence descending.
+6. **Canvas-Covering Box Filter**:
+   - Oversized false-positive bounding boxes covering $\ge 70\%$ of the image canvas are automatically filtered out per-box without invalidating the rest of the batch. Miners should pre-filter any predictions exceeding $60\%$ area ratio.
+7. **Decentralized Ensemble Consensus**:
+   - In Architecture v1.5, winners are determined per-image rather than winner-takes-all for the entire task. Miners whose predictions excel on specific tiles have their data selected, rewarded, and incorporated into the commercial dataset.
 
 ---
 
