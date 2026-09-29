@@ -58,15 +58,35 @@ def annotate_image_detector_only(
                 )
                 annotations.append(ann_item)
 
-    if len(annotations) > 512:
-        annotations = sorted(
-            annotations,
+    from template.miner.geometry import compute_image_net_metrics, canonical_image_name
+    img_w, img_h = img.size if hasattr(img, "size") else (1024, 1024)
+    total_area = float(img_w * img_h)
+
+    # Filter oversized boxes, clamp coordinates, and skip degenerate boxes
+    clean_annotations = []
+    for a in annotations:
+        if a.bounding_box and len(a.bounding_box) == 4:
+            x1, y1, x2, y2 = a.bounding_box
+            x1 = max(0.0, min(float(img_w), float(x1)))
+            y1 = max(0.0, min(float(img_h), float(y1)))
+            x2 = max(0.0, min(float(img_w), float(x2)))
+            y2 = max(0.0, min(float(img_h), float(y2)))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            box_area = (x2 - x1) * (y2 - y1)
+            if box_area / max(1.0, total_area) >= 0.60:
+                continue
+            a = a.model_copy(update={"bounding_box": [x1, y1, x2, y2]})
+        clean_annotations.append(a)
+
+    if len(clean_annotations) > 512:
+        clean_annotations = sorted(
+            clean_annotations,
             key=lambda a: float(getattr(a, "confidence", 1.0) if getattr(a, "confidence", 1.0) is not None else 1.0),
             reverse=True,
         )[:512]
+    annotations = clean_annotations
 
-    from template.miner.geometry import compute_image_net_metrics, canonical_image_name
-    img_w, img_h = img.size if hasattr(img, "size") else (1024, 1024)
     net_weight, coverage_pct, tree_count = compute_image_net_metrics(annotations, img_w, img_h)
     canonical_name = canonical_image_name(image_id, image_url)
 

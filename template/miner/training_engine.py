@@ -228,12 +228,30 @@ class ModelTrainingAnnotationEngine:
                             img_w, img_h = _im.size
                     except Exception:
                         pass
-                if len(anns) > 512:
-                    anns = sorted(
-                        anns,
+                total_area = float(img_w * img_h)
+                clean_anns = []
+                for a in anns:
+                    if a.bounding_box and len(a.bounding_box) == 4:
+                        x1, y1, x2, y2 = a.bounding_box
+                        x1 = max(0.0, min(float(img_w), float(x1)))
+                        y1 = max(0.0, min(float(img_h), float(y1)))
+                        x2 = max(0.0, min(float(img_w), float(x2)))
+                        y2 = max(0.0, min(float(img_h), float(y2)))
+                        if x2 <= x1 or y2 <= y1:
+                            continue
+                        box_area = (x2 - x1) * (y2 - y1)
+                        if box_area / max(1.0, total_area) >= 0.60:
+                            continue
+                        a = a.model_copy(update={"bounding_box": [x1, y1, x2, y2]})
+                    clean_anns.append(a)
+
+                if len(clean_anns) > 512:
+                    clean_anns = sorted(
+                        clean_anns,
                         key=lambda a: float(getattr(a, "confidence", 1.0) if getattr(a, "confidence", 1.0) is not None else 1.0),
                         reverse=True,
                     )[:512]
+                anns = clean_anns
                 net_weight, coverage_pct, tree_count = compute_image_net_metrics(anns, img_w, img_h)
 
                 records.append(
