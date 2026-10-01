@@ -9,16 +9,27 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 WEB_DIR="/home/komail/data-annotation-web"
 VPS_HOST="root@209.74.66.135"
 VPS_DEST="/var/www/canopymrv/artifacts/metagraph_cache.json"
+SSH_SOCK="/tmp/ssh-canopy-root@209.74.66.135:22"
 
-echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Querying live metagraph for Subnet 498..."
+TMP_FILE="/tmp/canopy_metagraph_cache_tmp.json"
+FINAL_FILE="/tmp/canopy_metagraph_cache.json"
 
-"$REPO_DIR/.venv-neurons/bin/python3" "$WEB_DIR/scripts/get_subnet_state.py" > /tmp/canopy_metagraph_cache.json 2>/dev/null || true
+"$REPO_DIR/.venv-neurons/bin/python3" "$WEB_DIR/scripts/get_subnet_state.py" > "$TMP_FILE" 2>/dev/null || true
 
-if [ -s /tmp/canopy_metagraph_cache.json ]; then
-    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Syncing cache to $VPS_HOST:$VPS_DEST..."
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$VPS_HOST" "mkdir -p /var/www/canopymrv/artifacts"
-    scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 /tmp/canopy_metagraph_cache.json "$VPS_HOST:$VPS_DEST"
-    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Metagraph sync complete."
+if [ -s "$TMP_FILE" ] && grep -q '"success": true' "$TMP_FILE" && grep -q '"active_miners": [1-9]' "$TMP_FILE"; then
+    mv "$TMP_FILE" "$FINAL_FILE"
+    mkdir -p "$WEB_DIR/artifacts"
+    cp "$FINAL_FILE" "$WEB_DIR/artifacts/metagraph_cache.json"
+
+    # Fast SSH sync using multiplexed socket
+    scp -o StrictHostKeyChecking=no \
+        -o ControlMaster=auto \
+        -o ControlPath="$SSH_SOCK" \
+        -o ControlPersist=10m \
+        -o ConnectTimeout=5 \
+        "$FINAL_FILE" "$VPS_HOST:$VPS_DEST" >/dev/null 2>&1 || true
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Metagraph sync complete: $(grep -o '"active_miners": [0-9]*' "$FINAL_FILE")"
 else
-    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Warning: /tmp/canopy_metagraph_cache.json was empty or failed."
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Metagraph sync skipped: output incomplete or 0 active miners"
+    rm -f "$TMP_FILE"
 fi
