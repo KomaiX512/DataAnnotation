@@ -6,7 +6,7 @@ SUBTENSOR_DIR="$ROOT_DIR/subtensor"
 LOCALNET_MODE="${LOCALNET_MODE:-single-node}"
 NEURON_PYTHON="${NEURON_PYTHON:-$ROOT_DIR/.venv-neurons/bin/python}"
 BTCLI_BIN="${BTCLI_BIN:-$ROOT_DIR/.venv-btcli/bin/btcli}"
-WALLET_PATH="${WALLET_PATH:-/home/komail/.bittensor/wallets}"
+WALLET_PATH="${WALLET_PATH:-$HOME/.bittensor/wallets}"
 CHAIN_ENDPOINT="${CHAIN_ENDPOINT:-ws://127.0.0.1:9944}"
 
 OWNER_WALLET_NAME="${OWNER_WALLET_NAME:-owner}"

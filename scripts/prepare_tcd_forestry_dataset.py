@@ -65,12 +65,22 @@ def infer_eco_class_from_biome(biome: str, crown_area: float) -> str:
 
 
 def main():
-    p_base = Path("/home/komail/.cache/huggingface/hub/datasets--restor--tcd/snapshots/d97d4da0ebbb6e249ae95ac5e19656babd972eb2/data")
+    repo_root = Path(__file__).resolve().parent.parent
+    p_base = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "datasets--restor--tcd"
+        / "snapshots"
+        / "d97d4da0ebbb6e249ae95ac5e19656babd972eb2"
+        / "data"
+    )
     p1 = p_base / "test-00000-of-00001.parquet"
     p2 = p_base / "train-00000-of-00007.parquet"
     p3 = p_base / "train-00001-of-00007.parquet"
 
-    output_base = Path("/home/komail/DataAnnotation/data/climate_mrv/samples")
+    output_base = repo_root / "data" / "climate_mrv" / "samples"
     golden_dir = output_base / "golden"
     raw_dir = output_base / "raw"
     golden_labels_file = output_base / "golden_labels.json"
@@ -234,7 +244,7 @@ def main():
     print(f"✓ Saved 400 Raw chips to {raw_dir}")
 
     # Clean flywheel cache
-    flywheel_cache = Path("/home/komail/DataAnnotation/data/flywheel/image_cache")
+    flywheel_cache = repo_root / "data" / "flywheel" / "image_cache"
     if flywheel_cache.exists():
         print("Clearing local flywheel image cache...")
         shutil.rmtree(flywheel_cache)

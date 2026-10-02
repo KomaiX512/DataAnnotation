@@ -31,6 +31,7 @@ from template.hazard.r2_storage import (
     load_r2_credentials_from_env,
     upload_bytes_to_r2,
     upload_image_to_r2,
+    _s3_client,
 )
 
 logging.basicConfig(
@@ -43,7 +44,23 @@ logger = logging.getLogger("batch_partitioner")
 def get_neutral_chip_id(image_path: Path, prefix: str = "chip") -> str:
     """Derive a clean, neutral, unrevealing identifier based on content hash."""
     h = hashlib.sha256(image_path.read_bytes()).hexdigest()[:16]
-    return f"{prefix}_{h}.jpg"
+    suffix = ".jpg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else ".png"
+    return f"{prefix}_{h}{suffix}"
+
+
+def _unique_images(paths: List[Path]) -> Tuple[List[Path], int]:
+    """Keep the first deterministic path for each distinct content hash."""
+    unique: List[Path] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for path in paths:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest in seen:
+            duplicates += 1
+            continue
+        seen.add(digest)
+        unique.append(path)
+    return unique, duplicates
 
 
 def partition_dataset(
@@ -68,6 +85,8 @@ def partition_dataset(
     private_base = private_vault_dir or (REPO_ROOT / "artifacts" / "validator_private_golden" / dataset_name)
     public_base.mkdir(parents=True, exist_ok=True)
     private_base.mkdir(parents=True, exist_ok=True)
+    if any(public_base.glob("batch_*")) or any(private_base.glob("batch_*")):
+        raise FileExistsError("Output directories already contain batches; use fresh isolated output paths to avoid mixing runs.")
 
     # 1. Load ground truth labels
     golden_labels: Dict[str, Any] = {}
@@ -75,25 +94,68 @@ def partition_dataset(
         golden_labels = json.loads(golden_labels_path.read_text(encoding="utf-8"))
         logger.info(f"Loaded {len(golden_labels)} ground-truth annotations from {golden_labels_path}")
 
-    # 2. Gather candidate images
-    all_raw_files = sorted(list(raw_images_dir.glob("*.jpg")) + list(raw_images_dir.glob("*.png")))
+    # 2. Gather distinct candidate images. Content hashes, rather than
+    # filenames, prevent duplicate copies from being sampled more than once.
+    all_raw_files, raw_duplicates = _unique_images(
+        sorted(list(raw_images_dir.glob("*.jpg")) + list(raw_images_dir.glob("*.jpeg")) + list(raw_images_dir.glob("*.png")))
+    )
     if not all_raw_files:
         raise FileNotFoundError(f"No images found in {raw_images_dir}")
-    logger.info(f"Discovered {len(all_raw_files)} raw images in {raw_images_dir}")
+    logger.info(f"Discovered {len(all_raw_files)} distinct raw images in {raw_images_dir}")
 
-    # Load golden pool images if provided
     golden_pool_files: List[Path] = []
+    golden_duplicates = 0
     if golden_source_dir and Path(golden_source_dir).is_dir():
-        golden_pool_files = sorted(list(Path(golden_source_dir).glob("*.jpg")) + list(Path(golden_source_dir).glob("*.png")))
-        logger.info(f"Discovered {len(golden_pool_files)} verified golden ground-truth files in {golden_source_dir}")
+        golden_pool_files, golden_duplicates = _unique_images(
+            sorted(list(Path(golden_source_dir).glob("*.jpg")) + list(Path(golden_source_dir).glob("*.jpeg")) + list(Path(golden_source_dir).glob("*.png")))
+        )
+        logger.info(f"Discovered {len(golden_pool_files)} distinct golden images in {golden_source_dir}")
 
-    total_possible_batches = (len(all_raw_files) + public_per_batch - 1) // public_per_batch
-    if max_batches is not None:
-        total_possible_batches = min(total_possible_batches, max_batches)
+    # A chip may have only one role in the run. Exclude cross-pool duplicates.
+    golden_hashes = {hashlib.sha256(path.read_bytes()).hexdigest() for path in golden_pool_files}
+    overlapping_raw = [p for p in all_raw_files if hashlib.sha256(p.read_bytes()).hexdigest() in golden_hashes]
+    if overlapping_raw:
+        overlap_paths = set(overlapping_raw)
+        all_raw_files = [p for p in all_raw_files if p not in overlap_paths]
+        logger.warning("Excluded %d raw chips duplicated in the private golden pool.", len(overlapping_raw))
+
+    # If there is no separate golden pool, only raw images with an explicit
+    # ground-truth record may be held back as golden samples.
+    if not golden_pool_files:
+        golden_pool_files = [p for p in all_raw_files if p.name in golden_labels]
+        if not golden_pool_files:
+            raise ValueError("No golden pool was supplied and no raw images have ground-truth entries.")
+        golden_hashes = {hashlib.sha256(path.read_bytes()).hexdigest() for path in golden_pool_files}
+        all_raw_files = [p for p in all_raw_files if hashlib.sha256(p.read_bytes()).hexdigest() not in golden_hashes]
+
+    missing_golden_labels = [p.name for p in golden_pool_files if p.name not in golden_labels]
+    if missing_golden_labels:
+        raise ValueError(f"Golden samples lack ground-truth entries: {missing_golden_labels[:5]}")
+
+    capacity = min(len(all_raw_files) // public_per_batch, len(golden_pool_files) // golden_per_batch)
+    requested = max_batches if max_batches is not None else capacity
+    if requested < 1:
+        raise ValueError("max_batches must be a positive integer.")
+    total_possible_batches = min(capacity, requested)
+    if total_possible_batches < 1:
+        raise ValueError(
+            "Not enough distinct, labeled images for one complete batch: "
+            f"public={len(all_raw_files)} (need {public_per_batch}), "
+            f"golden={len(golden_pool_files)} (need {golden_per_batch})."
+        )
+    if requested > capacity:
+        logger.warning(
+            "Requested up to %d complete batches, but only %d fit without reuse. "
+            "%d public and %d golden images will remain unused.",
+            requested,
+            capacity,
+            len(all_raw_files) - total_possible_batches * public_per_batch,
+            len(golden_pool_files) - total_possible_batches * golden_per_batch,
+        )
+    if upload_r2 and r2_creds is None:
+        raise RuntimeError("R2 upload was requested but no valid R2 credentials were loaded.")
 
     batches_summary = []
-    golden_offset = 0
-    public_offset = 0
 
     for batch_num in range(1, total_possible_batches + 1):
         batch_id = f"batch_{batch_num}"
@@ -110,26 +172,14 @@ def partition_dataset(
         batch_priv_images_dir = batch_priv_dir / "images"
         batch_priv_images_dir.mkdir(parents=True, exist_ok=True)
 
-        # A. Select 3 Golden Samples
-        batch_golden_srcs = []
-        if golden_pool_files:
-            if golden_offset + golden_per_batch > len(golden_pool_files):
-                golden_offset = 0
-            batch_golden_srcs = golden_pool_files[golden_offset : golden_offset + golden_per_batch]
-            golden_offset += len(batch_golden_srcs)
-        else:
-            batch_golden_srcs = all_raw_files[public_offset : public_offset + golden_per_batch]
-            public_offset += len(batch_golden_srcs)
-
-        # B. Select 27 Public Commercial Images
-        batch_public_srcs = all_raw_files[public_offset : public_offset + public_per_batch]
-        public_offset += len(batch_public_srcs)
-
-        # If last batch has fewer than public_per_batch, wrap around
-        if len(batch_public_srcs) < public_per_batch:
-            needed = public_per_batch - len(batch_public_srcs)
-            extra = [f for f in all_raw_files if f not in batch_golden_srcs and f not in batch_public_srcs][:needed]
-            batch_public_srcs.extend(extra)
+        # Select disjoint, fully populated portions of each pool. Never wrap
+        # or repeat examples to pad a short final batch.
+        golden_start = (batch_num - 1) * golden_per_batch
+        batch_golden_srcs = golden_pool_files[golden_start : golden_start + golden_per_batch]
+        public_start = (batch_num - 1) * public_per_batch
+        batch_public_srcs = all_raw_files[public_start : public_start + public_per_batch]
+        if len(batch_golden_srcs) != golden_per_batch or len(batch_public_srcs) != public_per_batch:
+            raise RuntimeError(f"Refusing incomplete batch {batch_id}; sample reuse or padding is prohibited.")
 
         logger.info(f"Selected {len(batch_golden_srcs)} golden audit chips and {len(batch_public_srcs)} public commercial chips.")
 
@@ -179,14 +229,15 @@ def partition_dataset(
                 try:
                     r2_url = upload_image_to_r2(dest_path, object_key=r2_key, creds=r2_creds)
                 except Exception as e:
-                    logger.warning(f"  R2 image upload note: {e}")
+                    raise RuntimeError(f"R2 image upload failed for {r2_key}: {e}") from e
 
             return {
                 "index": idx,
-                "image_id": neutral_id.replace(".jpg", ""),
+                "image_id": Path(neutral_id).stem,
                 "image_name": neutral_id,
                 "image_url": r2_url,
-                "local_path": str(dest_path),
+                "r2_object_key": f"{dataset_name}/{batch_id}/images/{neutral_id}",
+                "local_path": f"{dataset_name}/{batch_id}/images/{neutral_id}",
                 "width": width,
                 "height": height,
                 "is_golden": False,
@@ -203,6 +254,15 @@ def partition_dataset(
         pub_manifest_file = batch_pub_dir / "manifest.json"
         pub_manifest_file.write_text(json.dumps(public_manifest_records, indent=2), encoding="utf-8")
 
+        receipt = {
+            "batch_id": batch_id,
+            "expected_images": len(public_manifest_records),
+            "verified_images": 0,
+            "manifest_verified": False,
+            "annotations_verified": False,
+            "verified": False,
+            "status": "not_uploaded",
+        }
         if upload_r2 and r2_creds is not None:
             r2_manifest_key = f"{dataset_name}/{batch_id}/manifest.json"
             try:
@@ -212,9 +272,17 @@ def partition_dataset(
                     creds=r2_creds,
                     content_type="application/json",
                 )
-                logger.info(f"  [PUBLIC R2] Exported {batch_id} manifest to {r2_manifest_key}")
+                s3 = _s3_client(r2_creds)
+                for record in public_manifest_records:
+                    s3.head_object(Bucket=r2_creds.bucket_name, Key=record["r2_object_key"])
+                    receipt["verified_images"] += 1
+                s3.head_object(Bucket=r2_creds.bucket_name, Key=r2_manifest_key)
+                receipt["manifest_verified"] = True
+                receipt["status"] = "source_uploaded"
+                logger.info(f"  [PUBLIC R2] Uploaded and verified {batch_id} source images and manifest")
             except Exception as e:
-                logger.warning(f"  R2 manifest upload note: {e}")
+                raise RuntimeError(f"R2 upload verification failed for {batch_id}: {e}") from e
+        (batch_pub_dir / "r2_upload_receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
         logger.info(f"  [PUBLIC BATCH] Exported {len(public_manifest_records)} public commercial chips to {batch_pub_images_dir}")
 
@@ -229,7 +297,24 @@ def partition_dataset(
         })
 
     summary_file = public_base / "batch_summary.json"
-    summary_file.write_text(json.dumps(batches_summary, indent=2), encoding="utf-8")
+    summary_payload = {
+        "dataset_name": dataset_name,
+        "batch_size": batch_size,
+        "golden_per_batch": golden_per_batch,
+        "public_per_batch": public_per_batch,
+        "complete_batches": len(batches_summary),
+        "source_inventory": {
+            "unique_public_images": len(all_raw_files),
+            "duplicate_public_files_excluded": raw_duplicates,
+            "unique_labeled_golden_images": len(golden_pool_files),
+            "duplicate_golden_files_excluded": golden_duplicates,
+            "public_golden_overlap_excluded": len(overlapping_raw),
+            "unused_public_images": len(all_raw_files) - len(batches_summary) * public_per_batch,
+            "unused_golden_images": len(golden_pool_files) - len(batches_summary) * golden_per_batch,
+        },
+        "batches": batches_summary,
+    }
+    summary_file.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
     logger.info(f"\nSuccessfully partitioned {len(batches_summary)} batches! Summary written to {summary_file}")
     return batches_summary
 
@@ -240,7 +325,9 @@ def main():
     parser.add_argument("--golden-dir", type=str, default="data/climate_mrv/samples/golden", help="Path to golden source images")
     parser.add_argument("--golden-labels", type=str, default="data/climate_mrv/samples/golden_labels.json", help="Path to golden ground-truth labels")
     parser.add_argument("--dataset-name", type=str, default="climate_mrv", help="Dataset namespace (default: climate_mrv)")
-    parser.add_argument("--max-batches", type=int, default=17, help="Maximum batches to formulate (default: 17)")
+    parser.add_argument("--max-batches", type=int, default=None, help="Maximum complete batches to formulate")
+    parser.add_argument("--public-base-dir", type=str, default=None, help="Optional isolated output root for public batches")
+    parser.add_argument("--private-vault-dir", type=str, default=None, help="Optional isolated output root for golden batches")
     parser.add_argument("--upload-r2", action="store_true", help="Upload public commercial chips to Cloudflare R2")
     args = parser.parse_args()
 
@@ -252,12 +339,14 @@ def main():
             r2_creds = load_r2_credentials_from_env()
             logger.info(f"Loaded Cloudflare R2 credentials for bucket: {r2_creds.bucket_name}")
         except Exception as e:
-            logger.warning(f"Could not load R2 credentials from env: {e}")
+            logger.error(f"Could not load R2 credentials from env: {e}")
+            raise SystemExit(1)
 
+    resolve_input = lambda value: Path(value) if Path(value).is_absolute() else REPO_ROOT / value
     partition_dataset(
-        raw_images_dir=REPO_ROOT / args.raw_dir,
-        golden_labels_path=REPO_ROOT / args.golden_labels,
-        golden_source_dir=REPO_ROOT / args.golden_dir,
+        raw_images_dir=resolve_input(args.raw_dir),
+        golden_labels_path=resolve_input(args.golden_labels),
+        golden_source_dir=resolve_input(args.golden_dir),
         dataset_name=args.dataset_name,
         batch_size=30,
         golden_per_batch=3,
@@ -265,6 +354,8 @@ def main():
         max_batches=args.max_batches,
         upload_r2=args.upload_r2,
         r2_creds=r2_creds,
+        public_base_dir=Path(args.public_base_dir) if args.public_base_dir else None,
+        private_vault_dir=Path(args.private_vault_dir) if args.private_vault_dir else None,
     )
 
 

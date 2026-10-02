@@ -171,8 +171,13 @@ class BaseValidatorNeuron(BaseNeuron):
                 if self.should_exit:
                     break
 
-                self.sync()
-                self.step += 1
+                try:
+                    self.sync()
+                    self.step += 1
+                except Exception as err:
+                    bt.logging.error(f"Error during validator sync step({self.step}): {err}")
+                    time.sleep(2.0)
+
                 delay = float(getattr(self.config.neuron, "forward_step_sleep_seconds", 0.0) or 0.0)
                 if delay > 0:
                     bt.logging.info(

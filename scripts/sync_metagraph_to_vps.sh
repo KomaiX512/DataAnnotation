@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-WEB_DIR="/home/komail/data-annotation-web"
+WEB_DIR="${WEB_DIR:-$HOME/data-annotation-web}"
 VPS_HOST="root@209.74.66.135"
 VPS_DEST="/var/www/canopymrv/artifacts/metagraph_cache.json"
 SSH_SOCK="/tmp/ssh-canopy-root@209.74.66.135:22"

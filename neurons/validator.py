@@ -349,6 +349,12 @@ class Validator(BaseValidatorNeuron):
 
 if __name__ == "__main__":
     with Validator() as validator:
+        heartbeat_counter = 0
         while True:
-            bt.logging.info(f"Validator running... {time.time()}")
+            if hasattr(validator, "thread") and validator.thread and not validator.thread.is_alive():
+                bt.logging.error("CRITICAL: Validator background thread died! Exiting process for automatic recovery.")
+                sys.exit(1)
+            heartbeat_counter += 1
+            if heartbeat_counter % 12 == 0:  # Every 60 seconds
+                bt.logging.info(f"Validator running... {time.time()} (step={getattr(validator, 'step', 0)})")
             time.sleep(5)

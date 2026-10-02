@@ -222,7 +222,7 @@ def build_and_upload_batches(
                 "image_name": img_filename,
                 "image_url": raw_url,
                 "annotated_image_url": ann_url,
-                "local_path": str(raw_path),
+                "local_path": f"{dataset_name}/{batch_id}/images/{img_filename}",
                 "width": w_px,
                 "height": h_px,
                 "has_annotations": bool(ann_rec),

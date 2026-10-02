@@ -329,7 +329,7 @@ async def main():
     alpha = 0.35
     round_summaries = []
     inspected_datapoint_data = None
-    brain_artifacts_dir = Path("/home/komail/.gemini/antigravity-cli/brain/35623907-d561-4534-8488-db6c90dbf2c8")
+    brain_artifacts_dir = Path(os.getenv("BRAIN_ARTIFACTS_DIR", str(REPO_ROOT / "artifacts" / "e2e_run_output")))
 
     # 5. Execute Task Rounds
     for r_idx in range(total_rounds):
