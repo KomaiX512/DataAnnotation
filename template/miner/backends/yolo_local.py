@@ -234,6 +234,7 @@ class YoloLocalBackend(BaseModelBackend):
             return results_map
 
         from ultralytics import YOLO
+        import torch
 
         checkpoint = self._fine_tuned_checkpoint or self.pretrained_weights
         bt.logging.info(
@@ -241,13 +242,8 @@ class YoloLocalBackend(BaseModelBackend):
             f"with checkpoint={checkpoint}"
         )
 
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         if self._cached_model is None or self._cached_checkpoint != checkpoint:
-            import cv2
-            import torch
-            if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
-                torch.set_num_threads(4)
-            if hasattr(cv2, "setNumThreads"):
-                cv2.setNumThreads(2)
             self._cached_model = YOLO(str(checkpoint))
             self._cached_checkpoint = checkpoint
         model = self._cached_model
@@ -259,7 +255,7 @@ class YoloLocalBackend(BaseModelBackend):
             try:
                 with PILImage.open(str(img.image_path)) as raw_img:
                     pil_img = raw_img.convert("RGB")
-                    results = model(pil_img, verbose=False)
+                    results = model(pil_img, device=device, verbose=False)
 
                 annotations: List[PerImageAnnotationItem] = []
                 if results and len(results) > 0:
@@ -304,14 +300,10 @@ class YoloLocalBackend(BaseModelBackend):
         """Generate pseudo-labels using the pretrained model."""
         from ultralytics import YOLO
         from PIL import Image as PILImage
+        import torch
 
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         if self._cached_model is None or self._cached_checkpoint != self.pretrained_weights:
-            import cv2
-            import torch
-            if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
-                torch.set_num_threads(4)
-            if hasattr(cv2, "setNumThreads"):
-                cv2.setNumThreads(2)
             self._cached_model = YOLO(str(self.pretrained_weights))
             self._cached_checkpoint = self.pretrained_weights
         model = self._cached_model
@@ -319,7 +311,7 @@ class YoloLocalBackend(BaseModelBackend):
 
         for img in images:
             pil_img = PILImage.open(str(img.image_path))
-            results = model(pil_img, verbose=False)
+            results = model(pil_img, device=device, verbose=False)
 
             labels: List[PerImageAnnotationItem] = []
             if results and len(results) > 0:

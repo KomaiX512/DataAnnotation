@@ -140,7 +140,13 @@ class Miner(BaseMinerNeuron):
 # The main function parses the configuration and runs the miner.
 if __name__ == "__main__":
     with Miner() as miner:
+        heartbeat_counter = 0
         while True:
-            bt.logging.info("Miner running...")
+            if hasattr(miner, "thread") and miner.thread and not miner.thread.is_alive():
+                bt.logging.error("CRITICAL: Miner background thread died! Exiting process for automatic recovery.")
+                sys.exit(1)
+            heartbeat_counter += 1
+            if heartbeat_counter % 12 == 0:
+                bt.logging.info(f"Miner running... (step={getattr(miner, 'step', 0)})")
             import time
             time.sleep(5)
