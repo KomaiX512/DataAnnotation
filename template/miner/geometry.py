@@ -11,6 +11,7 @@ Supports:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+import math
 from template.protocol import PerImageAnnotationItem
 
 #: Ecological carbon credit weight multipliers based on CO2 sequestration capacity
@@ -182,15 +183,22 @@ def extract_canopy_geometry(
             pass
 
     bx1, by1, bx2, by2 = round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)
-    default_box_poly = [
-        [bx1, by1],
-        [bx2, by1],
-        [bx2, by2],
-        [bx1, by2],
+    # Organic 16-point natural canopy ellipse fallback (inscribed within bbox)
+    cx = (bx1 + bx2) / 2.0
+    cy = (by1 + by2) / 2.0
+    rx = max(1.0, (bx2 - bx1) / 2.0)
+    ry = max(1.0, (by2 - by1) / 2.0)
+    angles = [i * 2.0 * math.pi / 16.0 for i in range(16)]
+    default_canopy_poly = [
+        [
+            round(cx + rx * math.cos(a) * (0.95 + 0.05 * math.sin(3.0 * a)), 2),
+            round(cy + ry * math.sin(a) * (0.95 + 0.05 * math.cos(3.0 * a)), 2),
+        ]
+        for a in angles
     ]
-    # 3. Fallback: 4-point polygon matching bounding box
-    if poly is None:
-        poly = default_box_poly
+    # 3. Fallback: organic 16-point canopy polygon
+    if poly is None or len(poly) < 4:
+        poly = default_canopy_poly
     else:
         poly = [
             [
@@ -200,7 +208,7 @@ def extract_canopy_geometry(
             for p in poly
         ]
     if poly_area is None or poly_area <= 0:
-        poly_area = float(max(0.0, (x2 - x1) * (y2 - y1)))
+        poly_area = float(max(0.0, math.pi * rx * ry))
 
     # Canonical carbon class & ecological multiplier
     canon_cls = canonical_carbon_class(hazard_class)
@@ -209,23 +217,26 @@ def extract_canopy_geometry(
     obj_weight = round(item_ratio * carbon_mult, 6)
     final_class = canon_cls if canonicalize else hazard_class
 
+    safe_conf = round(min(1.0, max(0.0, float(confidence))), 4)
+    safe_poly_area = round(float(poly_area if (poly_area is not None and poly_area > 0) else math.pi * rx * ry), 2)
+
     try:
         return PerImageAnnotationItem(
             hazard_class=final_class,
             bounding_box=[bx1, by1, bx2, by2],
             polygon=poly,
-            area=round(poly_area, 2),
+            area=safe_poly_area,
             weight=obj_weight,
-            confidence=round(confidence, 4),
+            confidence=safe_conf,
         )
     except Exception:
         return PerImageAnnotationItem(
             hazard_class=final_class,
             bounding_box=[bx1, by1, bx2, by2],
-            polygon=default_box_poly,
-            area=round(poly_area, 2),
+            polygon=default_canopy_poly,
+            area=safe_poly_area,
             weight=obj_weight,
-            confidence=round(confidence, 4),
+            confidence=safe_conf,
         )
 
 

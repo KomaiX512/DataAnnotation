@@ -36,7 +36,7 @@ def test_extract_canopy_geometry_fallback_and_area():
     assert ann.hazard_class == "individual_tree"
     assert ann.bounding_box == [100.0, 100.0, 300.0, 300.0]
     assert ann.polygon is not None
-    assert len(ann.polygon) == 4
+    assert len(ann.polygon) >= 12
     assert ann.area is not None
     assert ann.area > 0
     assert ann.weight is not None
@@ -131,10 +131,14 @@ def test_fidelity_scorer_with_net_weight():
             ),
         ),
     )
+    import math
+    angles = [i * 2.0 * math.pi / 8.0 for i in range(8)]
+    circle = [[150.0 + 45.0 * math.cos(a), 150.0 + 45.0 * math.sin(a)] for a in angles]
     miner_items = [
         PerImageAnnotationItem(
             hazard_class="individual_tree",
             bounding_box=[100.0, 100.0, 200.0, 200.0],
+            polygon=circle,
             area=10000.0,
             weight=0.01,
         )

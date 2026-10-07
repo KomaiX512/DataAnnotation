@@ -11,6 +11,7 @@ from template.miner.backends.base import BaseModelBackend
 # Each value is imported only when requested, so heavy deps (openai, etc.)
 # are never loaded unless the miner actually selects that backend.
 _BACKEND_REGISTRY: Dict[str, str] = {
+    "segformer": "template.miner.backends.segformer.SegFormerBackend",
     "yolo_local": "template.miner.backends.yolo_local.YoloLocalBackend",
     "self_hosted": "template.miner.backends.self_hosted.SelfHostedBackend",
     "openai_vision": "template.miner.backends.openai_vision.OpenAIVisionBackend",

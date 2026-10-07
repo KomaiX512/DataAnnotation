@@ -680,14 +680,31 @@ def _manifest_box_annotations(
         ):
             continue
         hazard_class = str(row.get("hazard_class") or default_class).strip()
+        raw_poly = row.get("polygon")
+        parsed_poly = None
+        if isinstance(raw_poly, (list, tuple)) and len(raw_poly) >= 3:
+            try:
+                poly_pts = []
+                for pt in raw_poly:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        px, py = float(pt[0]), float(pt[1])
+                        if math.isfinite(px) and math.isfinite(py):
+                            poly_pts.append((px, py))
+                if len(poly_pts) >= 3:
+                    parsed_poly = tuple(poly_pts)
+            except (TypeError, ValueError):
+                parsed_poly = None
+
         annotations.append(
             GoldenAnnotation(
                 hazard_class=hazard_class,
                 bounding_box=tuple(int(round(value)) for value in box),
                 severity=severity_for_mrv_class(hazard_class),
+                polygon=parsed_poly,
             )
         )
     return annotations
+
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ bt.wallet = PasswordWallet
 import numpy as np
 from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
 
 from template.base.validator import BaseValidatorNeuron
@@ -342,6 +343,7 @@ class Validator(BaseValidatorNeuron):
 
     def _load_commercial_credentials(self) -> Optional[R2AccessCredentials]:
         try:
+            load_dotenv(Path(__file__).resolve().parent.parent / ".env")
             return load_r2_credentials_from_env()
         except Exception:
             return None

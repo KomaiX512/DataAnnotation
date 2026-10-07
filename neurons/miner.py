@@ -18,6 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import os
+import sys
 import typing
 
 # Restrict worker threads per process to prevent OpenMP/PyTorch thread contention and SIGFPE
@@ -51,7 +52,7 @@ class Miner(BaseMinerNeuron):
             getattr(getattr(self.config, "miner", object()), "model_backend", "") or ""
         ).strip()
 
-        if backend in ("yolo_local", "self_hosted", "openai_vision", "qwen_vl"):
+        if backend in ("segformer", "yolo_local", "self_hosted", "openai_vision", "qwen_vl"):
             from template.miner.training_engine import ModelTrainingAnnotationEngine
 
             self.annotation_engine = ModelTrainingAnnotationEngine(config=self.config)

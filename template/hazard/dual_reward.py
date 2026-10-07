@@ -28,7 +28,11 @@ import numpy as np
 
 from template.hazard.annotation_eval import PerMinerAnnotationScore
 from template.hazard.dataset_assembler import AdoptionLedger, WinningAnnotation
-from template.hazard.incentives import SELECTION_ELIGIBILITY_MIN_FIDELITY
+from template.hazard.incentives import (
+    SELECTION_ELIGIBILITY_MIN_FIDELITY,
+    SELECTION_ELIGIBILITY_RAMP_FLOOR,
+    selection_eligibility_multiplier,
+)
 
 _MIN_REWARDABLE_GOLDEN_IMAGES_FOR_ADOPTION = 3
 _MIN_REWARDED_POSITIVE_GOLDEN_IMAGES = 3
@@ -196,11 +200,12 @@ class DualFlywheelRewardComposer:
                 image_ids = [row.image_id for row in rows]
                 if (
                     math.isfinite(fidelity)
-                    and fidelity >= SELECTION_ELIGIBILITY_MIN_FIDELITY
+                    and fidelity >= SELECTION_ELIGIBILITY_RAMP_FLOOR
                     and len(rows) <= cap
                     and len(image_ids) == len(set(image_ids))
                 ):
-                    selected_by_uid[uid] = len(rows)
+                    ramp = selection_eligibility_multiplier(fidelity)
+                    selected_by_uid[uid] = len(rows) * ramp
 
         rewards: list[float] = []
         breakdowns: list[DualFlywheelBreakdown] = []
@@ -347,7 +352,7 @@ def _valid_selected_reward_record(
     if (
         not math.isfinite(fidelity)
         or not 0.0 <= fidelity <= 1.0
-        or fidelity < SELECTION_ELIGIBILITY_MIN_FIDELITY
+        or fidelity < SELECTION_ELIGIBILITY_RAMP_FLOOR
         or not math.isfinite(row_score)
         or not math.isclose(row_score, fidelity, rel_tol=1e-6, abs_tol=1e-7)
     ):

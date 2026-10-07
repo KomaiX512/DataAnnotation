@@ -88,6 +88,7 @@ class GoldenAnnotation:
     hazard_class: str
     bounding_box: Tuple[int, int, int, int]  # pixel coords [x_min, y_min, x_max, y_max]
     severity: SeverityTier
+    polygon: Optional[Tuple[Tuple[float, float], ...]] = None
 
 
 @dataclass(frozen=True)

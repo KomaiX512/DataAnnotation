@@ -126,21 +126,26 @@ class BaseMinerNeuron(BaseNeuron):
         self.last_sync_block = self.block
         try:
             while not self.should_exit:
-                while (
-                    self.block - self.last_sync_block
-                    < self.config.neuron.epoch_length
-                ):
-                    # Wait before checking again.
-                    time.sleep(1)
+                try:
+                    while (
+                        self.block - self.last_sync_block
+                        < self.config.neuron.epoch_length
+                    ):
+                        # Wait before checking again.
+                        time.sleep(1)
 
-                    # Check if we should exit.
-                    if self.should_exit:
-                        break
+                        # Check if we should exit.
+                        if self.should_exit:
+                            break
 
-                # Sync metagraph and potentially set weights.
-                self.sync()
-                self.last_sync_block = self.block
-                self.step += 1
+                    # Sync metagraph and potentially set weights.
+                    self.sync()
+                    self.last_sync_block = self.block
+                    self.step += 1
+                except Exception as e:
+                    bt.logging.error(f"Error during miner loop step({self.step}): {e}")
+                    time.sleep(2.0)
+                    continue
 
         # If someone intentionally stops the miner, it'll safely terminate operations.
         except KeyboardInterrupt:

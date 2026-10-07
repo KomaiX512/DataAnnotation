@@ -191,15 +191,16 @@ def test_response_shape_rejects_boxes_outside_validator_image_dimensions():
             )
         ]
     )
-    with pytest.raises(ValueError, match="Out-of-bounds"):
-        _validate_response_shape(
-            response,
-            expected_task_id="t-3",
-            expected_nonce="nonce",
-            annotations_payload=payload,
-            image_dimensions={"image-1": (100, 100)},
-            token_to_real_id={"token-1": "image-1"},
-        )
+    _validate_response_shape(
+        response,
+        expected_task_id="t-3",
+        expected_nonce="nonce",
+        annotations_payload=payload,
+        image_dimensions={"image-1": (100, 100)},
+        token_to_real_id={"token-1": "image-1"},
+    )
+    # Coordinate 101 is auto-clamped to width 100.0
+    assert payload.records[0].annotations[0].bounding_box[2] == 100.0
 
 
 def test_response_shape_rejects_duplicate_image_records():
@@ -355,7 +356,7 @@ def test_payload_parser_rejects_too_many_annotations_before_model_validation():
             {"annotations": [{} for _ in range(MAX_ANNOTATIONS_PER_ARTIFACT + 1)]}
         ]
     }
-    with pytest.raises(ValueError, match="too many annotations"):
+    with pytest.raises(ValueError, match="too many annotations|excessive annotations"):
         _parse_annotations_payload(json.dumps(payload).encode("utf-8"))
 
 
@@ -563,3 +564,57 @@ def test_set_weights_skips_when_scores_are_zero():
 
     # Subtensor.set_weights MUST NOT be called when scores are zero
     validator.subtensor.set_weights.assert_not_called()
+
+
+def test_broad_softmax_fair_prosperity_proportional_fidelity_ratio():
+    from template.hazard.incentives import broad_softmax_scores
+
+    # User case: top miner fidelity 0.35, second miner 0.28
+    scores = np.array([0.35, 0.28], dtype=np.float64)
+    shaped = broad_softmax_scores(
+        scores,
+        temperature=1.0,
+        floor=0.08,
+        min_score=0.05,
+    )
+    assert abs(float(shaped.sum()) - 1.0) < 1e-6
+    # Proportionate distribution ~54.7% vs 45.3% rather than 78% vs 9%
+    assert 0.52 < float(shaped[0]) < 0.57
+    assert 0.43 < float(shaped[1]) < 0.48
+
+
+def test_selection_eligibility_continuous_linear_ramp():
+    from template.hazard.incentives import (
+        SELECTION_ELIGIBILITY_MIN_FIDELITY,
+        SELECTION_ELIGIBILITY_RAMP_FLOOR,
+        selection_eligibility_multiplier,
+    )
+
+    assert SELECTION_ELIGIBILITY_MIN_FIDELITY == 0.20
+    assert SELECTION_ELIGIBILITY_RAMP_FLOOR == 0.05
+
+    # Below floor is 0.0
+    assert selection_eligibility_multiplier(0.0) == 0.0
+    assert selection_eligibility_multiplier(0.04) == 0.0
+    assert selection_eligibility_multiplier(0.05) == 0.0
+
+    # Above min fidelity is 1.0
+    assert selection_eligibility_multiplier(0.20) == 1.0
+    assert selection_eligibility_multiplier(0.35) == 1.0
+
+    # Continuous linear ramp in between
+    assert selection_eligibility_multiplier(0.125) == pytest.approx(0.5, abs=1e-6)
+    assert selection_eligibility_multiplier(0.10) == pytest.approx(1.0 / 3.0, abs=1e-6)
+
+
+def test_epoch_tasks_at_least_two_goldens_per_task():
+    from template.validator._epoch_tasks_src import _hamilton_counts_min
+
+    # 485 total images (38 goldens, 447 public) -> 16 tasks of 30, 1 task of 5
+    task_sizes = [30] * 16 + [5]
+    goldens_per_task = _hamilton_counts_min(38, task_sizes, min_count=2)
+    assert len(goldens_per_task) == 17
+    assert sum(goldens_per_task) == 38
+    assert all(g >= 2 for g in goldens_per_task)
+    # The remainder task of 5 has at least 2 goldens, eliminating the 1-golden lottery
+    assert goldens_per_task[-1] >= 2

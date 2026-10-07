@@ -226,4 +226,24 @@ scratch/
 bench/
 paper.txt
 
-
+# Internal SOTA Golden Samples & Saccadic Hierarchical Research (Proprietary)
+scripts/*saccadic*
+scripts/*golden*
+scripts/*benchmark*
+scripts/*figure*
+scripts/*article*
+scripts/*asset*
+scripts/*evaluator*
+scripts/*eval*
+scripts/*deploy_clean*
+scripts/*upload_v*
+scripts/*biome*
+scripts/*oam_tcd*
+scripts/*row*
+scripts/*charts*
+scripts/*baseline*
+scripts/*render*
+scripts/audit_diverse_5_biomes.py
+scripts/*hierarchical*
+scripts/setup_localnet_subnet2.py
+tests/test_audit_reproduction_and_penalization.py

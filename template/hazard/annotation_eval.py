@@ -62,6 +62,8 @@ class FidelityComponents:
     gt_net_weight: float = 0.0
     miner_net_weight: float = 0.0
     rewardable: bool = True
+    geometric_quality_multiplier: float = 1.0
+    rejection_reason: Optional[str] = None
 
 
 @dataclass
@@ -132,6 +134,8 @@ class AnnotationFidelityScorer:
                     net_weight_agreement=1.0,
                     gt_net_weight=0.0,
                     miner_net_weight=0.0,
+                    rewardable=True,
+                    geometric_quality_multiplier=1.0,
                 )
             # Miner hallucinated detections on a clean image — penalise.
             penalty = self.hallucination_penalty ** len(miner_items)
@@ -146,7 +150,27 @@ class AnnotationFidelityScorer:
                 net_weight_agreement=max(0.0, 1.0 - miner_net_weight),
                 gt_net_weight=0.0,
                 miner_net_weight=miner_net_weight,
+                rewardable=False,
+                geometric_quality_multiplier=0.0,
+                rejection_reason="hallucinated_on_clean_image",
             )
+
+        # Audit geometric quality and detect box-gaming, spiky shapes, and water hallucinations
+        image_np = None
+        if golden.image_path and golden.image_path.is_file():
+            try:
+                import cv2
+                img = cv2.imread(str(golden.image_path))
+                if img is not None:
+                    image_np = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            except Exception:
+                image_np = None
+
+        from template.hazard.geometry_quality import (
+            audit_annotation_geometry,
+            raster_polygon_iou,
+        )
+        audit = audit_annotation_geometry(miner_items, image_np)
 
         gt_net_weight = 0.0
         for gt in gt_annotations:
@@ -160,7 +184,7 @@ class AnnotationFidelityScorer:
         net_weight_agreement = round(max(0.0, 1.0 - (weight_diff / max(gt_net_weight, 0.05))), 6)
 
         # Greedy 1-1 matching: for each ground truth box, find best miner item
-        # by IoU; track which miner items matched something.
+        # by IoU (raster polygon IoU if polygons exist); track which miner items matched something.
         used_miner_idx: set[int] = set()
         per_match_iou: List[float] = []
         per_match_class: List[float] = []
@@ -168,10 +192,15 @@ class AnnotationFidelityScorer:
         for gt in gt_annotations:
             best_idx = -1
             best_iou = 0.0
+            gt_poly = getattr(gt, "polygon", None)
             for idx, item in enumerate(miner_items):
                 if idx in used_miner_idx:
                     continue
-                iou = iou_xyxy(item.bounding_box, gt.bounding_box)
+                item_poly = getattr(item, "polygon", None)
+                if gt_poly and item_poly:
+                    iou = raster_polygon_iou(item_poly, gt_poly, item.bounding_box, gt.bounding_box)
+                else:
+                    iou = iou_xyxy(item.bounding_box, gt.bounding_box)
                 if iou >= self.minimum_match_iou and iou > best_iou:
                     best_iou = iou
                     best_idx = idx
@@ -190,11 +219,10 @@ class AnnotationFidelityScorer:
         class_avg = sum(per_match_class) / n_gt
 
         hallucinated = max(0, len(miner_items) - len(used_miner_idx))
-        # Bounded precision penalty: penalize over-detection proportionately without annihilating
-        # high-recall models on dense high-resolution forestry chips.
+        # Unfloored precision penalty from first principles: penalize false positives directly
         if hallucinated > 0 and len(used_miner_idx) > 0:
-            precision_factor = len(used_miner_idx) / (len(used_miner_idx) + 0.25 * hallucinated)
-            penalty = max(0.20, precision_factor)
+            precision_factor = len(used_miner_idx) / (len(used_miner_idx) + 1.0 * hallucinated)
+            penalty = precision_factor
         elif len(used_miner_idx) == 0:
             penalty = 0.0
         else:
@@ -204,9 +232,12 @@ class AnnotationFidelityScorer:
             self.iou_weight * iou_avg
             + self.class_weight * class_avg
         )
-        # Factor in net carbon weight agreement (weight cross-verification)
-        coverage_factor = 0.70 + 0.30 * net_weight_agreement
-        fidelity = max(0.0, min(1.0, fidelity_raw * penalty * coverage_factor))
+        # Factor in net carbon weight agreement (severe omissions collapse score)
+        coverage_factor = 0.20 + 0.80 * net_weight_agreement
+        fidelity = max(
+            0.0,
+            min(1.0, fidelity_raw * penalty * coverage_factor * audit.quality_multiplier),
+        )
 
         return FidelityComponents(
             iou=float(iou_avg),
@@ -219,6 +250,9 @@ class AnnotationFidelityScorer:
             net_weight_agreement=float(net_weight_agreement),
             gt_net_weight=float(gt_net_weight),
             miner_net_weight=float(miner_net_weight),
+            rewardable=bool(audit.is_acceptable and fidelity > 0.0),
+            geometric_quality_multiplier=float(audit.quality_multiplier),
+            rejection_reason=audit.rejection_reason,
         )
 
     def _score_classification_items(
@@ -236,10 +270,7 @@ class AnnotationFidelityScorer:
         hallucinated_count = len(miner_items) - matched_count
         class_avg = sum(class_scores) / max(1, len(class_scores))
         if hallucinated_count and matched_count:
-            penalty = max(
-                0.20,
-                matched_count / (matched_count + 0.25 * hallucinated_count),
-            )
+            penalty = matched_count / (matched_count + 1.0 * hallucinated_count)
         elif not matched_count:
             penalty = 0.0
         else:
@@ -542,14 +573,35 @@ class _ReliabilityAccumulator:
             return
         if not gt_annotations:
             self.fn[uid]["_background"] += 1.0
+
+        from template.hazard.geometry_quality import (
+            audit_annotation_geometry,
+            raster_polygon_iou,
+        )
+        audit = audit_annotation_geometry(miner_items)
+        if not audit.is_acceptable or audit.quality_multiplier < 0.50:
+            for item in miner_items:
+                item_class = canonical_annotation_class(item.hazard_class)
+                self.fp[uid][item_class] += 1.0
+            for gt in gt_annotations:
+                gt_class = canonical_annotation_class(gt.hazard_class)
+                self.fn[uid][gt_class] += 1.0
+                self.severity_total[uid][gt_class] += 1.0
+            return
+
         for gt in gt_annotations:
             gt_class = canonical_annotation_class(gt.hazard_class)
             best_idx = -1
             best_iou = 0.0
+            gt_poly = getattr(gt, "polygon", None)
             for idx, item in enumerate(miner_items):
                 if idx in used_miner_idx:
                     continue
-                iou = iou_xyxy(item.bounding_box, gt.bounding_box)
+                item_poly = getattr(item, "polygon", None)
+                if gt_poly and item_poly:
+                    iou = raster_polygon_iou(item_poly, gt_poly, item.bounding_box, gt.bounding_box)
+                else:
+                    iou = iou_xyxy(item.bounding_box, gt.bounding_box)
                 if iou >= self.minimum_match_iou and iou > best_iou:
                     best_iou = iou
                     best_idx = idx
@@ -655,11 +707,12 @@ def evaluate_round_annotations(
                 comp = fidelity_scorer.score(items, golden)
                 if comp.rewardable:
                     score.fidelity_scores_by_image_id[image_id] = comp.fidelity
+                    reliability.update(uid, items, golden)
+                else:
+                    score.fidelity_scores_by_image_id[image_id] = 0.0
                 score.fidelity_components_by_image_id[image_id] = comp
                 score.total_hallucinations += comp.hallucinated_count
                 score.total_ground_truth += comp.ground_truth_count
-                if comp.rewardable:
-                    reliability.update(uid, items, golden)
             else:
                 peers = {
                     other_uid: peer_items

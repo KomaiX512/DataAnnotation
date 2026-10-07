@@ -28,6 +28,18 @@ if [ -s "$TMP_FILE" ] && grep -q '"success": true' "$TMP_FILE" && grep -q '"acti
         -o ControlPersist=10m \
         -o ConnectTimeout=5 \
         "$FINAL_FILE" "$VPS_HOST:$VPS_DEST" >/dev/null 2>&1 || true
+
+    # Fast sync current_round.json if present
+    if [ -f "$REPO_DIR/artifacts/commercial_dataset/current_round.json" ]; then
+        scp -o StrictHostKeyChecking=no \
+            -o ControlMaster=auto \
+            -o ControlPath="$SSH_SOCK" \
+            -o ControlPersist=10m \
+            -o ConnectTimeout=5 \
+            "$REPO_DIR/artifacts/commercial_dataset/current_round.json" \
+            "$VPS_HOST:/var/www/canopymrv/artifacts/commercial_dataset/current_round.json" >/dev/null 2>&1 || true
+    fi
+
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Metagraph sync complete: $(grep -o '"active_miners": [0-9]*' "$FINAL_FILE")"
 else
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Metagraph sync skipped: output incomplete or 0 active miners"

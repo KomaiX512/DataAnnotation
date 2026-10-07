@@ -290,13 +290,25 @@ def add_miner_args(cls, parser):
     parser.add_argument(
         "--miner.model_backend",
         type=str,
-        choices=["yolo_local", "self_hosted", "openai_vision", "qwen_vl"],
+        choices=["segformer", "yolo_local", "self_hosted", "openai_vision", "qwen_vl"],
         help=(
-            "Model backend for training and inference: yolo_local (Ultralytics YOLO on GPU), "
-            "self_hosted (external REST API), openai_vision (OpenAI fine-tuning), "
-            "qwen_vl (Qwen2-VL multimodal vision-language model)."
+            "Model backend for training and inference: segformer (MIT-B2 sub-meter crown segmentation), "
+            "yolo_local (Ultralytics YOLO on GPU), self_hosted (external REST API), "
+            "openai_vision (OpenAI fine-tuning), qwen_vl (Qwen2-VL multimodal vision-language model)."
         ),
         default="",
+    )
+    parser.add_argument(
+        "--miner.segformer_model_path",
+        type=str,
+        help="Path or HuggingFace repo ID for SegFormer weights.",
+        default="models/tcd-segformer-mit-b2",
+    )
+    parser.add_argument(
+        "--miner.segformer_device",
+        type=str,
+        help="Device for SegFormer execution (cuda or cpu).",
+        default="cuda",
     )
     parser.add_argument(
         "--miner.qwen_model_path",
@@ -569,7 +581,7 @@ def add_validator_args(cls, parser):
         "--neuron.incentive_temperature",
         type=float,
         help="Temperature for broad softmax incentive shaping.",
-        default=0.20,
+        default=1.0,
     )
 
     parser.add_argument(
